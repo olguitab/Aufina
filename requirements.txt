@@ -1,0 +1,15 @@
+pandas
+yfinance
+langchain
+langchain-core
+langchain-groq
+langgraph
+pydantic
+beautifulsoup4
+requests
+python-dotenv
+streamlit
+streamlit-autorefresh
+plotly
+scikit-learn
+groq
