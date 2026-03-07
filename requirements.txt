@@ -12,4 +12,6 @@ streamlit
 streamlit-autorefresh
 plotly
 scikit-learn
+xgboost
+lightgbm
 groq
