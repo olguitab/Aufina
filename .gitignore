@@ -8,6 +8,7 @@ __pycache__/
 logs/*.log
 storage/*.db
 artifacts/*.pkl
+data/processed_features.csv
 
 .pytest_cache/
 .DS_Store

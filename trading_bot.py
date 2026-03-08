@@ -2,9 +2,10 @@ import os
 import time
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import yfinance as yf
 
 # Import MVP components
 from market_data import MarketData
@@ -14,6 +15,13 @@ from models import Predictor
 from paper_trading import PaperPortfolio
 import requests as http_requests
 from paths import BOT_LOG_FILE, TRADING_DB_FILE, ensure_project_dirs
+from universe import get_trading_watchlist
+from risk_engine import RiskEngine
+from afp_tracker import AFPTracker
+from he_analyzer import HEAnalyzer
+from regime_detector import RegimeDetector
+from database import TradingDB
+from broker_interface import PaperBrokerAdapter, ManualRealBrokerAdapter
 
 # --- Setup Logging ---
 ensure_project_dirs()
@@ -29,17 +37,8 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 load_dotenv()
-# --- Sentinel AI Segmented Watchlists ---
-BLUE_CHIPS = ['SQM-B.SN', 'CHILE.SN', 'BSANTANDER.SN', 'LTM.SN', 'ENELCHILE.SN']
-COMMODITIES = ['CAP.SN', 'VAPORES.SN', 'CMPC.SN', 'COPEC.SN']
-SMALL_CAPS = ['SALFACORP.SN', 'HITES.SN', 'SONDA.SN', 'BESALCO.SN']
-
-# Complete Universe (IPSA/IGPA + Coverage)
-WATCHLIST = list(set(BLUE_CHIPS + COMMODITIES + SMALL_CAPS + [
-    'CENCOSUD.SN', 'ENELAM.SN', 'FALABELLA.SN', 'BCI.SN', 'AGUAS-A.SN', 'PARAUCO.SN',
-    'ANDINA-B.SN', 'CCU.SN', 'IAM.SN', 'MALLPLAZA.SN', 'ENTEL.SN', 'SMU.SN', 'RIPLEY.SN',
-    'ILC.SN', 'CONCHATORO.SN', 'COLBUN.SN', 'VSPT.SN'
-]))
+# Complete Universe (IPSA + expanded Chile coverage)
+WATCHLIST = get_trading_watchlist(include_global=False)
 
 INTERVAL_SECONDS = int(os.environ.get("TRADING_INTERVAL_SECONDS", 60)) # Default 60 seconds for stable continuous loop
 LLM_BATCH_SIZE = max(1, int(os.environ.get("LLM_BATCH_SIZE", 10)))
@@ -61,6 +60,12 @@ class AutonomousBot:
         self.paper_portfolio = PaperPortfolio()  # 10M CLP demo mode
         self.intelligence = IntelligenceLayer()
         self.market_data = MarketData()
+        self.risk_engine = RiskEngine()
+        self.paper_broker = PaperBrokerAdapter(self.paper_portfolio)
+        self.real_broker = ManualRealBrokerAdapter(self.portfolio)
+        self.afp_tracker = AFPTracker()
+        self.he_analyzer = HEAnalyzer()
+        self.regime_detector = RegimeDetector()
         # Trailing Stop: tracks the highest price seen since entry for each position
         self._price_peaks: dict = {}          # {ticker: highest_price_seen}
         self.TRAILING_STOP_PCT = 0.05         # Sell if price drops 5% from peak
@@ -69,6 +74,8 @@ class AutonomousBot:
         self._last_buy_alerts: dict = {}
         self.telegram_alerts_enabled = True
         self.last_update_id = 0
+        self.prediction_log_cooldown_seconds = int(os.environ.get("PREDICTION_LOG_COOLDOWN_SECONDS", 1800))
+        self._last_prediction_logged_at: dict = {}
         token = os.environ.get("TELEGRAM_BOT_TOKEN")
         if token:
             try:
@@ -84,6 +91,159 @@ class AutonomousBot:
             return
         send_telegram(message, chat_id_override)
 
+    def _log_context_snapshot(self, context_snapshot):
+        try:
+            now_ts = datetime.utcnow().isoformat() + "Z"
+            TradingDB.log_context(
+                {
+                    "timestamp": now_ts,
+                    "global_score": float(getattr(context_snapshot, "global_score", 0.0) or 0.0),
+                    "event_type": getattr(context_snapshot, "event_type", "unknown"),
+                    "impact_level": getattr(context_snapshot, "impact_level", "unknown"),
+                    "summary": getattr(context_snapshot, "summary", ""),
+                    "raw_payload": context_snapshot.model_dump() if hasattr(context_snapshot, "model_dump") else {},
+                }
+            )
+        except Exception as e:
+            logger.debug(f"Context logging skipped: {e}")
+
+    def _log_prediction_candidate(self, ticker: str, analysis, ticker_data: dict):
+        now = time.time()
+        last = self._last_prediction_logged_at.get(ticker, 0.0)
+        if (now - last) < self.prediction_log_cooldown_seconds:
+            return
+        self._last_prediction_logged_at[ticker] = now
+
+        tech = ticker_data.get("technical_data", {})
+        full_tech = dict(tech)
+        context_score = 0.0
+        ml_out = Predictor.predict_multi_objective(full_tech, context_score=context_score)
+        TradingDB.log_prediction(
+            {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "ticker": ticker,
+                "prediction_horizon_days": int(ml_out.get("horizon_days", 3)),
+                "predicted_prob": float(ml_out.get("probability", getattr(analysis, "ml_confidence", 0.5) or 0.5)),
+                "predicted_return": float(ml_out.get("expected_return_3d", 0.0)),
+                "resolved": 0,
+                "metadata": {
+                    "signal": getattr(analysis, "signal", "HOLD"),
+                    "reasoning": getattr(analysis, "reasoning", ""),
+                    "entry_price": float(ticker_data.get("current_price", 0.0) or 0.0),
+                },
+            }
+        )
+
+    def _resolve_pending_predictions(self):
+        unresolved = TradingDB.load_predictions(limit=500, unresolved_only=True)
+        if not unresolved:
+            return
+
+        now_utc = datetime.utcnow()
+        for p in unresolved:
+            try:
+                ts = datetime.fromisoformat(str(p.get("timestamp", "")).replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                continue
+
+            horizon = int(p.get("prediction_horizon_days", 3) or 3)
+            if now_utc < (ts + timedelta(days=horizon)):
+                continue
+
+            ticker = p.get("ticker")
+            if not ticker:
+                continue
+
+            meta = p.get("metadata", {}) or {}
+            entry_price = float(meta.get("entry_price", 0.0) or 0.0)
+            if entry_price <= 0:
+                continue
+
+            try:
+                hist = yf.Ticker(ticker).history(period="10d")
+                if hist is None or hist.empty:
+                    continue
+                realized_price = float(hist["Close"].iloc[-1])
+                realized_ret = (realized_price - entry_price) / (entry_price + 1e-9)
+                realized_label = 1 if realized_ret > 0.02 else 0
+                TradingDB.resolve_prediction(int(p.get("id")), realized_ret, realized_label)
+            except Exception:
+                continue
+
+    def _log_nav_snapshots(self, ticker_data: dict):
+        try:
+            real_prices = {
+                tk: ticker_data.get(tk, {}).get("current_price", 0.0)
+                for tk, qty in self.portfolio.positions.items()
+                if qty > 0
+            }
+            real_snapshot = self.risk_engine.portfolio_risk_snapshot(
+                cash_balance=self.portfolio.balance,
+                positions=self.portfolio.positions,
+                ticker_prices=real_prices,
+            )
+            TradingDB.log_nav(
+                {
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "portfolio": "real",
+                    "equity": float(real_snapshot.get("equity", self.portfolio.balance)),
+                    "cash": float(self.portfolio.balance),
+                    "invested": float(real_snapshot.get("invested_value", 0.0)),
+                    "note": "cycle",
+                }
+            )
+
+            paper_prices = {
+                tk: ticker_data.get(tk, {}).get("current_price", 0.0)
+                for tk, qty in self.paper_portfolio.positions.items()
+                if qty > 0
+            }
+            paper_snapshot = self.risk_engine.portfolio_risk_snapshot(
+                cash_balance=self.paper_portfolio.balance,
+                positions=self.paper_portfolio.positions,
+                ticker_prices=paper_prices,
+            )
+            TradingDB.log_nav(
+                {
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "portfolio": "paper",
+                    "equity": float(paper_snapshot.get("equity", self.paper_portfolio.balance)),
+                    "cash": float(self.paper_portfolio.balance),
+                    "invested": float(paper_snapshot.get("invested_value", 0.0)),
+                    "note": "cycle",
+                }
+            )
+        except Exception as e:
+            logger.debug(f"NAV logging skipped: {e}")
+
+    @staticmethod
+    def _phase4_opportunity_score(analysis, data: dict, regime: dict, afp_info: dict, he_info: dict) -> float:
+        ml_prob = float(getattr(analysis, "ml_confidence", 0.5) or 0.5)
+        quant_score = float(getattr(analysis, "quant_score", 5) or 5) / 10.0
+
+        tech = data.get("technical_data", {})
+        copper_corr = float(tech.get("Realtime_Copper_Corr_20d", 0.0) or 0.0)
+        copper_ret = float(tech.get("Macro_Copper_Ret", tech.get("Copper_Return", 0.0)) or 0.0)
+        copper_boost = copper_corr * copper_ret * 8.0
+
+        liquidity_score = float(tech.get("Liquidity_Score", 0.5) or 0.5)
+        regime_name = regime.get("regime", "sideways")
+        regime_boost = 0.08 if regime_name == "bull" else (-0.10 if regime_name == "bear" else 0.0)
+
+        afp_pressure = float(afp_info.get("pressure_score", 0.0) or 0.0)
+        he_impact = float(he_info.get("impact_score", 0.0) or 0.0)
+
+        score = (
+            0.45 * ml_prob
+            + 0.15 * quant_score
+            + 0.12 * afp_pressure
+            + 0.10 * he_impact
+            + 0.10 * liquidity_score
+            + 0.08 * copper_boost
+            + regime_boost
+        )
+        return float(score)
+
     def _execute_paper_signal(self, ticker: str, signal: str, price: float, reasoning: str, confidence: float = 0.5):
         """Executes autonomous paper-trading orders for the 10M demo portfolio."""
         if price <= 0:
@@ -91,6 +251,27 @@ class AutonomousBot:
 
         if signal == "BUY":
             if self.paper_portfolio.positions.get(ticker, 0) > 0:
+                return
+
+            suggested_qty = self.paper_portfolio.calculate_position_size(price, confidence=confidence)
+            if suggested_qty <= 0:
+                return
+
+            market_prices = {
+                tk: self.paper_portfolio.position_costs.get(tk, 0.0)
+                for tk, qty in self.paper_portfolio.positions.items()
+                if qty > 0
+            }
+            ok, reason = self.risk_engine.validate_buy(
+                ticker=ticker,
+                proposed_qty=suggested_qty,
+                proposed_price=price,
+                cash_balance=self.paper_portfolio.balance,
+                positions=self.paper_portfolio.positions,
+                ticker_prices=market_prices,
+            )
+            if not ok:
+                logger.info(f"[PAPER][RISK BLOCK] BUY {ticker} bloqueado: {reason}")
                 return
         elif signal == "SELL":
             if self.paper_portfolio.positions.get(ticker, 0) <= 0:
@@ -475,9 +656,12 @@ class AutonomousBot:
     def run_cycle(self):
         logger.info("Starting market scan cycle (Sentinel AI Engine)...")
         self._check_telegram_commands()
+        market_regime = self.regime_detector.detect()
         
         # Snapshot global context once to avoid repeated LLM calls across chunks
         context_snapshot = self.intelligence.context_service.analyze_context()
+        self._log_context_snapshot(context_snapshot)
+        self._resolve_pending_predictions()
         
         # 1. Fetch Market Data ...
         ticker_data = {}
@@ -516,8 +700,22 @@ class AutonomousBot:
             signal = getattr(analysis, "signal", "HOLD")
             signal_counts[signal] = signal_counts.get(signal, 0) + 1
 
+            afp_info = self.afp_tracker.estimate_pressure(
+                ticker,
+                ticker_data.get(ticker, {}).get("technical_data", {}),
+            )
+            he_info = self.he_analyzer.analyze(ticker, ticker_data.get(ticker, {}).get("news_text", ""))
+            phase4_score = self._phase4_opportunity_score(
+                analysis,
+                ticker_data.get(ticker, {}),
+                market_regime,
+                afp_info,
+                he_info,
+            )
+
             if analysis.signal == "BUY":
-                buy_candidates.append((ticker, analysis))
+                self._log_prediction_candidate(ticker, analysis, ticker_data.get(ticker, {}))
+                buy_candidates.append((ticker, analysis, phase4_score, afp_info, he_info))
                 self._execute_paper_signal(
                     ticker=ticker,
                     signal="BUY",
@@ -552,14 +750,74 @@ class AutonomousBot:
             f"SELL={signal_counts.get('SELL', 0)} | "
             f"HOLD={signal_counts.get('HOLD', 0)}"
         )
+        logger.info(
+            "Regime detector: "
+            f"regime={market_regime.get('regime')} | "
+            f"confidence={market_regime.get('confidence', 0.0):.2f} | "
+            f"ret20d={market_regime.get('ret_20d', 0.0):.2%}"
+        )
+
+        paper_prices = {
+            tk: ticker_data.get(tk, {}).get("current_price", 0.0)
+            for tk, qty in self.paper_portfolio.positions.items()
+            if qty > 0
+        }
+        risk_snapshot = self.risk_engine.portfolio_risk_snapshot(
+            cash_balance=self.paper_portfolio.balance,
+            positions=self.paper_portfolio.positions,
+            ticker_prices=paper_prices,
+        )
+
+        paper_vols = {
+            tk: ticker_data.get(tk, {}).get("technical_data", {}).get("Volatility_20d", 0.02)
+            for tk, qty in self.paper_portfolio.positions.items()
+            if qty > 0
+        }
+        paper_returns_history = {
+            tk: ticker_data.get(tk, {}).get("technical_data", {}).get("Recent_Returns_30d", [])
+            for tk, qty in self.paper_portfolio.positions.items()
+            if qty > 0
+        }
+        corr_matrix = self.risk_engine.build_correlation_matrix(paper_returns_history)
+        var_snapshot = self.risk_engine.estimate_parametric_var(
+            cash_balance=self.paper_portfolio.balance,
+            positions=self.paper_portfolio.positions,
+            ticker_prices=paper_prices,
+            returns_vol=paper_vols,
+            correlation_matrix=corr_matrix,
+            confidence=0.95,
+        )
+        stress_snapshot = self.risk_engine.run_stress_tests(
+            cash_balance=self.paper_portfolio.balance,
+            positions=self.paper_portfolio.positions,
+            ticker_prices=paper_prices,
+        )
+
+        logger.info(
+            "Risk snapshot (PAPER): "
+            f"invested={risk_snapshot['invested_pct']:.1%} | "
+            f"max_pos={risk_snapshot['max_single_position_pct']:.1%} | "
+            f"max_sector={risk_snapshot['max_sector_pct']:.1%} | "
+            f"open_positions={int(risk_snapshot['open_positions'])} | "
+            f"VaR95_1d={var_snapshot['var_1d_pct']:.1%} | "
+            f"VaR_method={var_snapshot.get('method', 'diagonal')}"
+        )
+        logger.info(
+            "Stress snapshot (PAPER): "
+            f"mild={stress_snapshot['shock_mild_pct']:.1%} | "
+            f"moderate={stress_snapshot['shock_moderate_pct']:.1%} | "
+            f"severe={stress_snapshot['shock_severe_pct']:.1%}"
+        )
+        self._log_nav_snapshots(ticker_data)
 
         if buy_candidates:
+            buy_candidates.sort(key=lambda row: row[2], reverse=True)
             # Alertas para REAL portfolio (solo recomendaciones Telegram)
             current_time = time.time()
             cooldown_hours = 4
             actionable_buys = []
 
-            for ticker, analysis in buy_candidates:
+            for ticker, analysis, phase4_score, afp_info, he_info in buy_candidates:
                 if ticker in self.portfolio.positions and self.portfolio.positions[ticker] > 0:
                     continue
 
@@ -571,27 +829,75 @@ class AutonomousBot:
                 if price <= 0:
                     continue
 
-                actionable_buys.append((ticker, analysis, price))
+                actionable_buys.append((ticker, analysis, price, phase4_score, afp_info, he_info))
 
             if actionable_buys:
                 capital_disponible = max(self.portfolio.balance, 0)
                 capital_por_accion = capital_disponible / len(actionable_buys)
 
-                for ticker, analysis, price in actionable_buys:
+                current_prices = {
+                    tk: ticker_data.get(tk, {}).get("current_price", 0.0)
+                    for tk, qty in self.portfolio.positions.items()
+                    if qty > 0
+                }
+
+                for ticker, analysis, price, phase4_score, afp_info, he_info in actionable_buys:
                     suggested_shares = int(capital_por_accion / price)
                     suggested_size_clp = suggested_shares * price
+                    urgency = he_info.get("urgency", "low")
+                    urgency_emoji = "🚨" if urgency == "high" else ("🟠" if urgency == "medium" else "🟢")
+                    urgency_label = "Evento material urgente" if urgency == "high" else (
+                        "Evento material monitoreado" if urgency == "medium" else "Sin urgencia material"
+                    )
+                    afp_label = (
+                        "presión compradora AFP"
+                        if afp_info.get("pressure_type") == "buying"
+                        else "presión vendedora AFP"
+                        if afp_info.get("pressure_type") == "selling"
+                        else "flujo AFP neutral"
+                    )
+
+                    risk_ok = False
+                    risk_reason = ""
+                    if suggested_shares > 0:
+                        risk_ok, risk_reason = self.risk_engine.validate_buy(
+                            ticker=ticker,
+                            proposed_qty=suggested_shares,
+                            proposed_price=price,
+                            cash_balance=self.portfolio.balance,
+                            positions=self.portfolio.positions,
+                            ticker_prices=current_prices,
+                        )
 
                     if suggested_shares <= 0:
-                        msg = (f"🟢 *ALERTA DE COMPRA* 🟢\n"
+                           msg = (f"{urgency_emoji} *ALERTA DE COMPRA* {urgency_emoji}\n"
                                f"📌 *Acción:* {ticker}\n"
                                f"💰 *Precio Recomendado:* ${price:,.0f}\n"
+                               f"🎯 *Score Fase 4:* {phase4_score:.3f}\n"
+                               f"🧭 *Régimen de mercado:* {market_regime.get('regime', 'sideways')}\n"
+                               f"🏛️ *Señal AFP:* {afp_label} ({float(afp_info.get('pressure_score', 0.0)):+.2f})\n"
+                               f"🗞️ *HE Analyzer:* {urgency_label} ({float(he_info.get('impact_score', 0.0)):+.2f})\n"
                                f"🏦 *Capital Disponible:* ${capital_disponible:,.0f} CLP\n"
                                f"⚠️ *Sin capital suficiente* para comprar 1 acción al precio actual.\n"
                                f"💡 *Razón:* {analysis.reasoning}")
+                    elif not risk_ok:
+                        msg = (f"🟡 *SEÑAL BUY BLOQUEADA POR RIESGO* 🟡\n"
+                               f"📌 *Acción:* {ticker}\n"
+                               f"💰 *Precio:* ${price:,.0f}\n"
+                               f"🎯 *Score Fase 4:* {phase4_score:.3f}\n"
+                               f"🧭 *Régimen de mercado:* {market_regime.get('regime', 'sideways')}\n"
+                               f"🏛️ *Señal AFP:* {afp_label} ({float(afp_info.get('pressure_score', 0.0)):+.2f})\n"
+                               f"🗞️ *HE Analyzer:* {urgency_label} ({float(he_info.get('impact_score', 0.0)):+.2f})\n"
+                               f"⚖️ *Motivo de bloqueo:* {risk_reason}\n"
+                               f"💡 *Señal IA:* {analysis.reasoning}")
                     else:
-                        msg = (f"🟢 *ALERTA DE COMPRA* 🟢\n"
+                           msg = (f"{urgency_emoji} *ALERTA DE COMPRA* {urgency_emoji}\n"
                                f"📌 *Acción:* {ticker}\n"
                                f"💰 *Precio Recomendado:* ${price:,.0f}\n"
+                               f"🎯 *Score Fase 4:* {phase4_score:.3f}\n"
+                               f"🧭 *Régimen de mercado:* {market_regime.get('regime', 'sideways')}\n"
+                               f"🏛️ *Señal AFP:* {afp_label} ({float(afp_info.get('pressure_score', 0.0)):+.2f})\n"
+                               f"🗞️ *HE Analyzer:* {urgency_label} ({float(he_info.get('impact_score', 0.0)):+.2f})\n"
                                f"🏦 *Capital Disponible:* ${capital_disponible:,.0f} CLP\n"
                                f"💼 *Sugerencia:* Comprar {suggested_shares} acciones por ~${suggested_size_clp:,.0f} CLP\n"
                                f"💡 *Razón:* {analysis.reasoning}\n\n"

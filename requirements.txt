@@ -1,4 +1,5 @@
 pandas
+numpy
 yfinance
 langchain
 langchain-core
@@ -6,6 +7,7 @@ langchain-groq
 langgraph
 pydantic
 beautifulsoup4
+feedparser
 requests
 python-dotenv
 streamlit
@@ -14,4 +16,5 @@ plotly
 scikit-learn
 xgboost
 lightgbm
+shap
 groq

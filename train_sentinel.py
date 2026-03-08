@@ -2,7 +2,8 @@ import os
 import sys
 import logging
 import pandas as pd
-from features import download_historical_data, generate_features, FULL_WATCHLIST
+from features import download_historical_data, generate_features
+from universe import get_training_watchlist
 from models import train_model
 from paths import TRAINING_LOG_FILE, ensure_project_dirs
 
@@ -29,7 +30,8 @@ def run_institutional_training():
     
     # 1. Data Acquisition
     try:
-        raw_df, macros = download_historical_data(FULL_WATCHLIST, years=10)
+        training_watchlist = get_training_watchlist(include_global=True)
+        raw_df, macros = download_historical_data(training_watchlist, years=10)
         if raw_df is None or raw_df.empty:
             logger.error("Failed to download historical data.")
             return
@@ -50,7 +52,23 @@ def run_institutional_training():
     # 3. Model Training (Exhaustive Search)
     try:
         logger.info("Starting exhaustive Stacking Ensemble training...")
-        train_model()
+        result = train_model() or {}
+        if result.get("status") == "ok":
+            logger.info(
+                "Training artifacts ready | model=%s | walkforward=%s | report=%s",
+                result.get("model_file"),
+                result.get("walkforward_file"),
+                result.get("training_report_file"),
+            )
+            wf = result.get("walk_forward") or {}
+            if wf:
+                logger.info(
+                    "Walk-forward summary | F1=%.3f | Precision=%.3f | Recall=%.3f | Accuracy=%.3f",
+                    wf.get("f1_mean", 0.0),
+                    wf.get("precision_mean", 0.0),
+                    wf.get("recall_mean", 0.0),
+                    wf.get("accuracy_mean", 0.0),
+                )
         logger.info("=== ✅ TRAINING COMPLETE. Sentinel AI is now robust. ===")
     except Exception as e:
         logger.error(f"Error during model training: {e}")

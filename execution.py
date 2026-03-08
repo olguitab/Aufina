@@ -1,6 +1,7 @@
 from datetime import datetime
 import sqlite3
 from database import DB_PATH
+from risk_engine import RiskEngine
 
 class PortfolioManager:
     def __init__(self, initial_balance: float = 100000.0):
@@ -9,6 +10,16 @@ class PortfolioManager:
         self.balance = TradingDB.load_state()
         self.positions = TradingDB.load_positions()
         self.trade_log = TradingDB.load_trade_log()
+        self.risk_engine = RiskEngine()
+
+    def _get_position_reference_prices(self) -> dict:
+        if not self.positions:
+            return {}
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute("SELECT ticker, avg_cost FROM positions").fetchall()
+        conn.close()
+        prices = {ticker: float(avg_cost) for ticker, avg_cost in rows if avg_cost and avg_cost > 0}
+        return prices
         
     def calculate_position_size(self, price: float, confidence: float = 0.5) -> int:
         """Calculate position size based on ML conviction (Ultra-Aggressive).
@@ -59,6 +70,22 @@ class PortfolioManager:
                         return
 
             cost = size * price
+
+            if size > 0:
+                market_prices = self._get_position_reference_prices()
+                market_prices[ticker] = price
+                approved, reason = self.risk_engine.validate_buy(
+                    ticker=ticker,
+                    proposed_qty=size,
+                    proposed_price=price,
+                    cash_balance=self.balance,
+                    positions=self.positions,
+                    ticker_prices=market_prices,
+                )
+                if not approved:
+                    log = f"[{timestamp}] Action: BLOCKED BUY {ticker}. Risk rule: {reason}"
+                    print(log)
+                    return
             
             if size > 0 and self.balance >= cost:
                 self.balance -= cost

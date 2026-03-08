@@ -10,7 +10,8 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import os
 from models import Predictor, FEATURE_COLS
-from features import IPSA_WATCHLIST, MACRO_INDICATORS
+from features import MACRO_INDICATORS
+from universe import get_training_watchlist
 from paths import BACKTEST_RESULTS_FILE, BACKTEST_TRADES_FILE, MODEL_FILE, ensure_project_dirs
 
 # --- Configuration ---
@@ -21,7 +22,9 @@ START_DATE = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
 END_DATE = datetime.now().strftime('%Y-%m-%d')
 
 class BacktestEngine:
-    def __init__(self, watchlist: list = IPSA_WATCHLIST):
+    def __init__(self, watchlist: list = None):
+        if watchlist is None:
+            watchlist = get_training_watchlist(include_global=False)[:30]
         self.watchlist = watchlist
         self.balance = INITIAL_BALANCE
         self.positions = {}        # {ticker: quantity}
@@ -36,6 +39,18 @@ class BacktestEngine:
         self.TAKE_PROFIT_PCT = 0.20    # Adjusted to 20% for faster rotation
         self.INVESTMENT_PER_TICKER_PCT = 0.50 
         self.BUY_THRESHOLD = 0.37      # Final High-Voltage Threshold
+
+    @staticmethod
+    def _predict_prob_from_row(row: pd.Series) -> float:
+        try:
+            X = pd.DataFrame([row[FEATURE_COLS]])
+            model_payload = Predictor.load_model()
+            if not model_payload:
+                return 0.0
+            direction_model = model_payload.get("direction_model") if isinstance(model_payload, dict) else model_payload
+            return float(direction_model.predict_proba(X)[0][1])
+        except Exception:
+            return 0.0
 
     def fetch_data(self):
         """Fetches 1 year of data to have enough for indicators in the 6-month window."""
@@ -69,19 +84,35 @@ class BacktestEngine:
         return all_dfs, macros
 
     def generate_features_daily(self, prices_df: pd.DataFrame, macro_closes: dict):
-        """Generates ML features for a specific stock dataframe."""
+        """Generates ML features aligned with models.FEATURE_COLS."""
         df = prices_df.copy()
         
         # Momentum
         df['Return_1d'] = df['Close'].pct_change(1)
         df['Return_5d'] = df['Close'].pct_change(5)
+        df['Return_10d'] = df['Close'].pct_change(10)
+        df['Return_20d'] = df['Close'].pct_change(20)
         
         # Trend
         df['MA20'] = df['Close'].rolling(window=20).mean()
+        df['MA50'] = df['Close'].rolling(window=50).mean()
+        df['MA200'] = df['Close'].rolling(window=200).mean()
         df['Dist_MA20'] = (df['Close'] - df['MA20']) / df['MA20']
+        df['Dist_MA50'] = (df['Close'] - df['MA50']) / df['MA50']
+        df['Dist_MA200'] = (df['Close'] - df['MA200']) / df['MA200']
+        df['MA20_MA50_Cross'] = (df['MA20'] > df['MA50']).astype(int)
         
         # Volatility
         df['Volatility_20d'] = df['Return_1d'].rolling(window=20).std()
+        df['Volatility_5d'] = df['Return_1d'].rolling(window=5).std()
+
+        # ATR ratio
+        high_low = df['High'] - df['Low']
+        high_close = (df['High'] - df['Close'].shift()).abs()
+        low_close = (df['Low'] - df['Close'].shift()).abs()
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR_14'] = true_range.rolling(14).mean()
+        df['ATR_Ratio'] = df['ATR_14'] / (df['Close'] + 1e-9)
         
         # RSI 14
         delta = df['Close'].diff()
@@ -89,6 +120,26 @@ class BacktestEngine:
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / (loss + 1e-9)
         df['RSI_14'] = 100 - (100 / (1 + rs))
+
+        # MACD
+        ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = ema12 - ema26
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+
+        # Bollinger
+        bb_mid = df['Close'].rolling(window=20).mean()
+        bb_std = df['Close'].rolling(window=20).std()
+        bb_upper = bb_mid + (2 * bb_std)
+        bb_lower = bb_mid - (2 * bb_std)
+        df['BB_Width'] = (bb_upper - bb_lower) / (bb_mid + 1e-9)
+        df['BB_Position'] = (df['Close'] - bb_lower) / ((bb_upper - bb_lower) + 1e-9)
+
+        # OBV + volume ratio
+        df['OBV'] = (np.sign(df['Close'].diff()).fillna(0.0) * df['Volume'].fillna(0.0)).cumsum()
+        df['OBV_MA20'] = df['OBV'].rolling(window=20).mean()
+        df['Volume_Ratio'] = df['Volume'] / (df['Volume'].rolling(window=20).mean() + 1e-9)
         
         # Macro alignment
         for sym, name in MACRO_INDICATORS.items():
@@ -96,8 +147,23 @@ class BacktestEngine:
                 df[f'Macro_{name}'] = macro_closes[sym]
                 df[f'Macro_{name}'] = df[f'Macro_{name}'].ffill()
                 df[f'Macro_{name}_Ret'] = df[f'Macro_{name}'].pct_change(1)
+
+        # Dynamic copper correlation
+        if 'Macro_Copper' in df.columns:
+            df['Copper_Rolling_Corr_30d'] = df['Close'].rolling(30).corr(df['Macro_Copper'])
+        else:
+            df['Copper_Rolling_Corr_30d'] = np.nan
+
+        # Context proxy instead of neutral constant
+        context_proxy = pd.Series(0.0, index=df.index)
+        if 'Macro_USDCLP_Ret' in df.columns:
+            context_proxy += df['Macro_USDCLP_Ret'].rolling(window=5).mean() * -1
+        if 'Macro_Copper_Ret' in df.columns:
+            context_proxy += df['Macro_Copper_Ret'].rolling(window=5).mean()
+        if 'Macro_VIX_Ret' in df.columns:
+            context_proxy += df['Macro_VIX_Ret'].rolling(window=5).mean() * -0.5
+        df['Context_Score'] = context_proxy.clip(-1, 1)
         
-        df['Context_Score'] = 0.0 # Neutral context for backtest
         return df.dropna()
 
     def run(self):
@@ -151,8 +217,7 @@ class BacktestEngine:
                 elif drop_from_peak <= -self.TRAILING_STOP_PCT:
                     # ML Check
                     row = ticker_features[ticker].loc[current_date]
-                    X = pd.DataFrame([row[FEATURE_COLS]])
-                    ml_prob = Predictor.load_model().predict_proba(X)[0][1]
+                    ml_prob = self._predict_prob_from_row(row)
                     
                     if ml_prob < 0.45:
                         to_sell.append((ticker, curr_price, f"Confirmed Trailing Stop (Peak Drop {drop_from_peak:.1%}, ML {ml_prob:.1%})"))
@@ -180,10 +245,7 @@ class BacktestEngine:
                 if ticker not in ticker_features or current_date not in ticker_features[ticker].index: continue
                 
                 row = ticker_features[ticker].loc[current_date]
-                X = pd.DataFrame([row[FEATURE_COLS]])
-                try:
-                    ml_prob = Predictor.load_model().predict_proba(X)[0][1]
-                except: ml_prob = 0.0
+                ml_prob = self._predict_prob_from_row(row)
                 
                 if ml_prob > self.BUY_THRESHOLD:
                     candidates.append((ticker, ml_prob, row['Close']))
