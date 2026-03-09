@@ -169,7 +169,16 @@ JSON:"""
             except Exception as e:
                 last_error = e
                 err_msg = str(e).lower()
+                is_auth_failure = ("401" in err_msg or "unauthorized" in err_msg or "invalid api key" in err_msg)
                 is_rate_limit = ("rate_limit" in err_msg or "429" in err_msg or "too many requests" in err_msg)
+
+                if is_auth_failure:
+                    self._activate_cooldown(self.tpd_cooldown_seconds, "auth failure (401)")
+                    self.llm = None
+                    gemini_res = self._invoke_gemini(prompt)
+                    if gemini_res is not None:
+                        return gemini_res
+                    break
 
                 if not is_rate_limit and attempt == max_attempts - 1:
                     break

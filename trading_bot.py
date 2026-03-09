@@ -63,10 +63,12 @@ def _extra_tickers_from_env() -> list[str]:
 # Complete Universe (IPSA + expanded Chile coverage + optional global/extra via env)
 _include_global = _env_flag("TRADING_INCLUDE_GLOBAL", default=True)
 _base_watchlist = get_trading_watchlist(include_global=_include_global)
-WATCHLIST = list(dict.fromkeys(_base_watchlist + _extra_tickers_from_env()))
+_max_watchlist_size = max(1, int(os.environ.get("TRADING_MAX_TICKERS", 24)))
+WATCHLIST = list(dict.fromkeys(_base_watchlist + _extra_tickers_from_env()))[:_max_watchlist_size]
 
-INTERVAL_SECONDS = int(os.environ.get("TRADING_INTERVAL_SECONDS", 45)) # Default 45 seconds (aggressive profile)
-LLM_BATCH_SIZE = max(1, int(os.environ.get("LLM_BATCH_SIZE", 14)))
+INTERVAL_SECONDS = int(os.environ.get("TRADING_INTERVAL_SECONDS", 120))
+LLM_BATCH_SIZE = max(1, int(os.environ.get("LLM_BATCH_SIZE", 6)))
+MARKET_DATA_MAX_WORKERS = max(1, int(os.environ.get("MARKET_DATA_MAX_WORKERS", 4)))
 
 def send_telegram(message: str, chat_id_override: str = None):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -323,7 +325,7 @@ class AutonomousBot:
         try:
             context_snapshot = self.intelligence.context_service.analyze_context()
             ticker_data = {}
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            with ThreadPoolExecutor(max_workers=MARKET_DATA_MAX_WORKERS) as executor:
                 fut_to_ticker = {executor.submit(self.market_data.get_comprehensive_data, t): t for t in WATCHLIST}
                 for fut in as_completed(fut_to_ticker):
                     ticker = fut_to_ticker[fut]
@@ -691,7 +693,7 @@ class AutonomousBot:
         
         # 1. Fetch Market Data ...
         ticker_data = {}
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=MARKET_DATA_MAX_WORKERS) as executor:
             fut_to_ticker = {executor.submit(self.market_data.get_comprehensive_data, t): t for t in WATCHLIST}
             for fut in as_completed(fut_to_ticker):
                 t = fut_to_ticker[fut]

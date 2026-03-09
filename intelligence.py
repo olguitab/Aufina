@@ -308,6 +308,7 @@ class IntelligenceLayer:
                     err_msg = str(e).lower()
                     if "401" in err_msg or "unauthorized" in err_msg or "invalid api key" in err_msg:
                         self._activate_cooldown(self.auth_failure_cooldown_seconds, "auth failure (401)")
+                        self.llm = None
                         print("⚠️ Groq auth failed. Verifica GROQ_API_KEY en entorno.")
                         break
                     if "413" in err_msg or "payload too large" in err_msg:

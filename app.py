@@ -30,6 +30,9 @@ load_dotenv()
 
 st.set_page_config(page_title="Aureus Wealth", page_icon="💼", layout="wide")
 
+_BOT_THREAD_LOCK = threading.Lock()
+_BOT_THREAD = None
+
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -82,9 +85,17 @@ def run_bot_in_background():
     AutonomousBot().start()
 
 
+def _ensure_single_bot_thread() -> None:
+    global _BOT_THREAD
+    with _BOT_THREAD_LOCK:
+        if _BOT_THREAD is not None and _BOT_THREAD.is_alive():
+            return
+        _BOT_THREAD = threading.Thread(target=run_bot_in_background, daemon=True)
+        _BOT_THREAD.start()
+
+
 if not st.session_state.bot_thread_started:
-    thread = threading.Thread(target=run_bot_in_background, daemon=True)
-    thread.start()
+    _ensure_single_bot_thread()
     st.session_state.bot_thread_started = True
 
 st_autorefresh(interval=20 * 1000, key="aureus_refresh")

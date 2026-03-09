@@ -5,6 +5,18 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: "streamlit run app.py --server.port $PORT --server.address 0.0.0.0"
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: TRADING_INTERVAL_SECONDS
+        value: "120"
+      - key: TRADING_MAX_TICKERS
+        value: "24"
+      - key: MARKET_DATA_MAX_WORKERS
+        value: "4"
+      - key: LLM_BATCH_SIZE
+        value: "6"
+      - key: TRADING_INCLUDE_GLOBAL
+        value: "false"
       - key: GROQ_API_KEY
         sync: false
       - key: GEMINI_API_KEY
