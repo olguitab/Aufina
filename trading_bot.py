@@ -41,7 +41,7 @@ load_dotenv()
 WATCHLIST = get_trading_watchlist(include_global=False)
 
 INTERVAL_SECONDS = int(os.environ.get("TRADING_INTERVAL_SECONDS", 60)) # Default 60 seconds for stable continuous loop
-LLM_BATCH_SIZE = max(1, int(os.environ.get("LLM_BATCH_SIZE", 10)))
+LLM_BATCH_SIZE = max(1, int(os.environ.get("LLM_BATCH_SIZE", 14)))
 
 def send_telegram(message: str, chat_id_override: str = None):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -300,19 +300,14 @@ class AutonomousBot:
 
             promising_batch = {}
             for ticker, data in ticker_data.items():
-                tech = data.get("technical_data", {})
-                ml_prob = tech.get("ml_confidence", 0.3)
-                if ml_prob > 0.30:
+                price = float(data.get("current_price", 0.0) or 0.0)
+                if bool(data.get("is_active", False)) and price > 0:
                     promising_batch[ticker] = data
 
             if not promising_batch:
                 return "ℹ️ No encontré acciones candidatas en este momento."
 
-            final_analyses = {}
-            batch_list = list(promising_batch.keys())
-            for i in range(0, len(batch_list), LLM_BATCH_SIZE):
-                chunk = {k: promising_batch[k] for k in batch_list[i : i + LLM_BATCH_SIZE]}
-                final_analyses.update(self.intelligence.bulk_analyze(chunk, context_data=context_snapshot))
+            final_analyses = self.intelligence.bulk_analyze(promising_batch, context_data=context_snapshot)
 
             buy_candidates = []
             for ticker, analysis in final_analyses.items():
@@ -678,18 +673,13 @@ class AutonomousBot:
         # 2. Preparation
         promising_batch = {}
         for ticker, data in ticker_data.items():
-            tech = data.get("technical_data", {})
-            ml_prob = tech.get("ml_confidence", 0.3) # Fallback
-            
-            if ml_prob > 0.30 or ticker in self._get_active_tickers():
+            price = float(data.get("current_price", 0.0) or 0.0)
+            is_candidate = (bool(data.get("is_active", False)) and price > 0)
+            if is_candidate or ticker in self._get_active_tickers():
                 promising_batch[ticker] = data
 
         # 3. AI Analysis
-        final_analyses = {}
-        batch_list = list(promising_batch.keys())
-        for i in range(0, len(batch_list), LLM_BATCH_SIZE):
-            chunk = {k: promising_batch[k] for k in batch_list[i : i + LLM_BATCH_SIZE]}
-            final_analyses.update(self.intelligence.bulk_analyze(chunk, context_data=context_snapshot))
+        final_analyses = self.intelligence.bulk_analyze(promising_batch, context_data=context_snapshot)
 
         # 4. Execution
         buy_candidates = []

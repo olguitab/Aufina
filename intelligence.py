@@ -63,7 +63,12 @@ class IntelligenceLayer:
         groq_api_key = os.environ.get("GROQ_API_KEY")
         if groq_api_key:
             try:
-                self.llm = ChatGroq(model=model_name, temperature=0.0)
+                self.llm = ChatGroq(
+                    model=model_name,
+                    temperature=0.0,
+                    max_retries=0,
+                    timeout=20,
+                )
             except Exception as exc:
                 print(f"⚠️ Groq init failed, fallback to Gemini when needed: {exc}")
 
@@ -83,9 +88,74 @@ class IntelligenceLayer:
         self.context_service = ContextService()
         self.rate_limit_cooldown_seconds = int(os.environ.get("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", 180))
         self.tpd_cooldown_seconds = int(os.environ.get("GROQ_TPD_COOLDOWN_SECONDS", 900))
+        self.fast_fail_on_429 = os.environ.get("GROQ_FAST_FAIL_ON_429", "1").strip().lower() in {"1", "true", "yes", "on"}
+        self.max_bulk_prompt_chars = int(os.environ.get("MAX_BULK_PROMPT_CHARS", 18000))
+        self.max_news_chars = int(os.environ.get("MAX_NEWS_CHARS", 220))
+        self.max_llm_tickers_per_call = int(os.environ.get("MAX_LLM_TICKERS_PER_CALL", 14))
+        self.ml_only_buy_threshold = float(os.environ.get("ML_ONLY_BUY_THRESHOLD", 0.57))
+        self.ml_only_sell_threshold = float(os.environ.get("ML_ONLY_SELL_THRESHOLD", 0.35))
         self._llm_cooldown_until = 0.0
         self.min_buy_probability = float(os.environ.get("MIN_BUY_PROBABILITY", 0.45))
         self.workflow = self._build_graph()
+
+    @staticmethod
+    def _compact_tech_for_llm(tech: Dict[str, Any]) -> Dict[str, Any]:
+        """Reduce payload size while keeping the most predictive/high-signal features."""
+        allowed_keys = {
+            "CurrentPrice", "MA20", "MA50", "MA200", "RSI_14", "ATR_Ratio", "ADV_20d",
+            "Realtime_Copper_Corr_20d", "Liquidity_Score", "MonthlyReturn_Pct", "DailyReturn_Pct",
+            "FiveDayReturn_Pct", "TenDayReturn_Pct", "Dist_MA20_Pct", "Dist_MA50_Pct", "Dist_MA200_Pct",
+            "Volatility_20d", "Volatility_5d", "MACD", "MACD_Signal", "MACD_Hist", "BB_Width",
+            "BB_Position", "Volume_Ratio", "Copper_Return", "Macro_Copper_Ret", "Macro_SP500_Ret",
+            "Macro_USDCLP_Ret", "Macro_Lithium_Ret", "Macro_MSCI_EM_Ret", "Macro_VIX_Ret", "Trend",
+        }
+        compact = {}
+        for key in allowed_keys:
+            if key not in tech:
+                continue
+            value = tech.get(key)
+            if isinstance(value, float):
+                compact[key] = round(value, 6)
+            else:
+                compact[key] = value
+        return compact
+
+    def _build_ml_fallback_analysis(self, item: Dict[str, Any], context_score: float) -> UnifiedAnalysis:
+        ml_prob = float(item.get("ml_prob", 0.5) or 0.5)
+        exp_ret = float(item.get("ml_expected_return_3d", 0.0) or 0.0)
+
+        if ml_prob >= self.ml_only_buy_threshold and exp_ret >= -0.005:
+            signal = "BUY"
+        elif ml_prob <= self.ml_only_sell_threshold and exp_ret < 0.0:
+            signal = "SELL"
+        else:
+            signal = "HOLD"
+
+        if exp_ret > 0.01:
+            trend = "Bullish"
+        elif exp_ret < -0.01:
+            trend = "Bearish"
+        else:
+            trend = "Sideways"
+
+        confidence_score = int(min(10, max(1, round(ml_prob * 10))))
+        reasoning = (
+            "ML-only fallback active (LLM throttled/unavailable). "
+            f"prob={ml_prob:.1%}, exp_ret_3d={exp_ret:.2%}, context={context_score:+.2f}."
+        )
+
+        return UnifiedAnalysis(
+            ml_confidence=ml_prob,
+            quant_score=confidence_score,
+            trend=trend,
+            quant_reasoning="Fallback cuantitativo por control de cuota LLM.",
+            sentiment=0.0,
+            sentiment_confidence=0.0,
+            sentiment_reasoning="Sentimiento omitido en fallback ML-only.",
+            signal=signal,
+            strategy_used="ML Fallback",
+            reasoning=reasoning,
+        )
 
     @staticmethod
     def _format_driver_trace(drivers: list) -> str:
@@ -101,9 +171,14 @@ class IntelligenceLayer:
 
     def _retry_after_from_error(self, err_msg: str) -> float:
         match = re.search(r"try again in\s*(\d+)ms", err_msg, re.IGNORECASE)
-        if not match:
-            return 0.0
-        return max(1.0, int(match.group(1)) / 1000.0)
+        if match:
+            return max(1.0, int(match.group(1)) / 1000.0)
+
+        sec_match = re.search(r"retrying request .*? in\s*([0-9]+(?:\.[0-9]+)?)\s*seconds", err_msg, re.IGNORECASE)
+        if sec_match:
+            return max(1.0, float(sec_match.group(1)))
+
+        return 0.0
 
     def llm_available(self) -> bool:
         return time.time() >= self._llm_cooldown_until
@@ -130,6 +205,22 @@ class IntelligenceLayer:
                         time.sleep(self._gemini_next_allowed_at - now)
 
                     response = requests.post(url, json=payload, timeout=30)
+                    if response.status_code == 429:
+                        retry_after_header = response.headers.get("Retry-After")
+                        retry_after = 0.0
+                        try:
+                            retry_after = float(retry_after_header) if retry_after_header else 0.0
+                        except Exception:
+                            retry_after = 0.0
+
+                        cooldown = max(self.gemini_429_cooldown_seconds, retry_after, self.gemini_min_interval_seconds)
+                        self._gemini_next_allowed_at = max(self._gemini_next_allowed_at, time.time() + cooldown)
+                        print(f"⚠️ Gemini 429 on {model_name}. Cooldown ~{cooldown:.0f}s")
+                        if attempt == 0:
+                            time.sleep(min(3.0, cooldown))
+                            continue
+                        break
+
                     self._gemini_next_allowed_at = time.time() + self.gemini_min_interval_seconds
                     response.raise_for_status()
                     data = response.json()
@@ -150,6 +241,7 @@ class IntelligenceLayer:
                         )
                         time.sleep(1.5)
                         continue
+                    print(f"⚠️ Gemini error on {model_name}: {exc}")
                     break
 
         print("⚠️ Gemini fallback failed across configured models")
@@ -211,11 +303,22 @@ class IntelligenceLayer:
                         return parsed
                 except Exception as e:
                     err_msg = str(e).lower()
+                    if "413" in err_msg or "payload too large" in err_msg:
+                        print("⚠️ Groq payload too large (413). Skipping provider and using fallback.")
+                        break
                     if "rate_limit" in err_msg or "429" in err_msg or "too many requests" in err_msg:
                         retry_after = self._retry_after_from_error(str(e))
                         is_tpd_limit = ("tokens per day" in err_msg or "tpd" in err_msg)
                         if is_tpd_limit:
                             self._activate_cooldown(max(self.tpd_cooldown_seconds, retry_after), "TPD limit")
+                            break
+
+                        if self.fast_fail_on_429:
+                            self._activate_cooldown(max(30.0, self.rate_limit_cooldown_seconds, retry_after), "429 fast-fail")
+                            break
+
+                        if retry_after >= 10:
+                            self._activate_cooldown(max(self.rate_limit_cooldown_seconds, retry_after), "429 retry-after")
                             break
 
                         wait_seconds = min(8, 2 ** (attempt + 1))
@@ -373,6 +476,30 @@ JSON:"""
         if context_data is None:
             context_data = self.context_service.analyze_context()
         context_score = context_data.global_score
+
+        if len(batch_data) > 1:
+            probe_context = []
+            for ticker, data in batch_data.items():
+                probe_context.append(
+                    {
+                        "ticker": ticker,
+                        "tech": self._compact_tech_for_llm(data.get("technical_data", {})),
+                        "news": (data.get("news_text", "") or "")[: self.max_news_chars],
+                    }
+                )
+
+            probe_prompt = (
+                f"Task: Analyze batch. Context: {context_score}. INPUT DATA (JSON): "
+                f"{json.dumps(probe_context, separators=(',', ':'))}"
+            )
+            if len(probe_prompt) > self.max_bulk_prompt_chars:
+                items = list(batch_data.items())
+                split_idx = max(1, len(items) // 2)
+                left = dict(items[:split_idx])
+                right = dict(items[split_idx:])
+                left_res = self.bulk_analyze(left, context_data=context_data)
+                right_res = self.bulk_analyze(right, context_data=context_data)
+                return {**left_res, **right_res}
         
         # 0.1 Fetch Live Macro Data for current returns
         macro_rets = {}
@@ -398,21 +525,34 @@ JSON:"""
             top_drivers = explain.get("top_drivers", [])
             batch_context.append({
                 "ticker": ticker,
-                "tech": tech,
+                "tech": self._compact_tech_for_llm(tech),
                 "ml_prob": ml_prob,
                 "ml_expected_return_3d": float(ml_outputs.get("expected_return_3d", 0.0)),
                 "ml_expected_horizon_days": int(ml_outputs.get("horizon_days", 3)),
                 "explainability_method": explain.get("explainability_method", "heuristic"),
                 "drivers": top_drivers,
-                "news": data.get("news_text", "")[:500] 
+                "news": (data.get("news_text", "") or "")[: self.max_news_chars]
             })
+
+        # Keep LLM budget bounded: send only highest-priority names to LLM,
+        # resolve the rest with deterministic ML fallback.
+        llm_context = list(batch_context)
+        if len(llm_context) > max(1, self.max_llm_tickers_per_call):
+            llm_context.sort(
+                key=lambda it: (
+                    abs(float(it.get("ml_prob", 0.5)) - 0.5)
+                    + abs(float(it.get("ml_expected_return_3d", 0.0)))
+                ),
+                reverse=True,
+            )
+            llm_context = llm_context[: self.max_llm_tickers_per_call]
             
         prompt = f"""Role: Institutional Quant Lead.
-Task: Analyze a batch of {len(tickers)} stocks from the Chilean market universe.
+Task: Analyze a batch of {len(llm_context)} stocks from the Chilean market universe.
 GLOBAL CONTEXT SCORE: {context_score} ({context_data.summary})
 
 INPUT DATA (JSON):
-{json.dumps(batch_context)}
+{json.dumps(llm_context, separators=(',', ':'))}
 
 YOUR TASK:
 HYPER-AGGRESSIVE: SIGNAL: BUY IS THE DEFAULT. Avoid 'HOLD' at all costs.
@@ -444,14 +584,9 @@ JSON:"""
                 existing_qr = (results[t].quant_reasoning or "").strip()
                 results[t].quant_reasoning = f"{existing_qr} || {explain_tail}" if existing_qr else explain_tail
             else:
-                # Conservative fallback when LLM output is unavailable for a ticker
-                results[t] = UnifiedAnalysis(
-                    ml_confidence=item["ml_prob"],
-                    signal="HOLD",
-                    reasoning="LLM unavailable/rate-limited; defaulting to HOLD with ML-only safeguard.",
-                    quant_score=5,
-                    quant_reasoning=explain_tail,
-                )
+                fallback = self._build_ml_fallback_analysis(item, context_score)
+                fallback.quant_reasoning = f"{fallback.quant_reasoning} || {explain_tail}"
+                results[t] = fallback
                 
         return results
 

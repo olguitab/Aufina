@@ -1,3 +1,4 @@
+import os
 from typing import List
 
 
@@ -74,21 +75,43 @@ def _dedupe_keep_order(items: List[str]) -> List[str]:
     return list(dict.fromkeys(items))
 
 
+def _normalize_ticker(ticker: str) -> str:
+    cleaned = (ticker or "").strip().upper()
+    if cleaned.startswith("$"):
+        cleaned = cleaned[1:]
+    return cleaned
+
+
+def _excluded_tickers() -> set:
+    raw = os.environ.get(
+        "EXCLUDED_TICKERS",
+        "SECURITY.SN,CENCOSHOPP.SN,ORO_BLANCO.SN,PILMAIQUEN.SN,NUEVAPOLAR.SN,MULTIFOODS.SN,INVERMAR.SN,BICECORP.SN,AZULAZUL.SN",
+    )
+    return {_normalize_ticker(t) for t in raw.split(",") if t.strip()}
+
+
+def _clean_watchlist(items: List[str]) -> List[str]:
+    excluded = _excluded_tickers()
+    normalized = (_normalize_ticker(t) for t in items)
+    filtered = [t for t in normalized if t and t not in excluded]
+    return _dedupe_keep_order(filtered)
+
+
 def get_trading_watchlist(include_global: bool = False) -> List[str]:
     """Returns the watchlist for live scanning/execution."""
-    base = _dedupe_keep_order(IPSA_WATCHLIST + CHILE_EXPANDED_WATCHLIST)
+    base = _clean_watchlist(IPSA_WATCHLIST + CHILE_EXPANDED_WATCHLIST)
     if include_global:
-        return _dedupe_keep_order(base + GLOBAL_WATCHLIST)
+        return _clean_watchlist(base + GLOBAL_WATCHLIST)
     return base
 
 
 def get_training_watchlist(include_global: bool = True) -> List[str]:
     """Returns the watchlist used for feature generation and model training."""
-    base = _dedupe_keep_order(IPSA_WATCHLIST + CHILE_EXPANDED_WATCHLIST)
+    base = _clean_watchlist(IPSA_WATCHLIST + CHILE_EXPANDED_WATCHLIST)
     if include_global:
-        return _dedupe_keep_order(base + GLOBAL_WATCHLIST)
+        return _clean_watchlist(base + GLOBAL_WATCHLIST)
     return base
 
 
 def get_sector(ticker: str) -> str:
-    return SECTOR_MAP.get(ticker, 'Other')
+    return SECTOR_MAP.get(_normalize_ticker(ticker), 'Other')

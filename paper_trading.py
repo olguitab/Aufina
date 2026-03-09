@@ -6,6 +6,7 @@ This is completely isolated from the live trading database.
 
 import sqlite3
 import json
+import os
 from typing import Dict, List, Any
 from datetime import datetime
 from paths import PAPER_TRADING_DB_FILE, ensure_project_dirs
@@ -171,6 +172,14 @@ class PaperPortfolio:
             risk_pct = 0.25
         else:
             risk_pct = 0.15
+
+        risk_cap_from_env = float(os.environ.get("PAPER_MAX_POSITION_PCT", 0.0) or 0.0)
+        if risk_cap_from_env <= 0:
+            # Keep a small buffer below portfolio hard limit (default risk max position = 20%)
+            configured_risk_limit = float(os.environ.get("RISK_MAX_POSITION_PCT", 0.20) or 0.20)
+            risk_cap_from_env = max(0.05, configured_risk_limit - 0.02)
+
+        risk_pct = min(risk_pct, risk_cap_from_env)
 
         amount = self.balance * risk_pct
         size = int(amount / price)

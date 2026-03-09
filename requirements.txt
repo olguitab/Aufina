@@ -12,6 +12,7 @@ requests
 python-dotenv
 streamlit
 streamlit-autorefresh
+watchdog
 plotly
 scikit-learn
 xgboost

@@ -9,10 +9,12 @@ from zoneinfo import ZoneInfo
 
 class MarketData:
     MACRO_CACHE_TTL_SECONDS = int(os.environ.get("MACRO_CACHE_TTL_SECONDS", 90))
+    INVALID_TICKER_COOLDOWN_SECONDS = int(os.environ.get("INVALID_TICKER_COOLDOWN_SECONDS", 6 * 3600))
     _macro_cache_data: Dict[str, float] | None = None
     _macro_cache_expires_at: float = 0.0
     _copper_returns_cache: pd.Series | None = None
     _copper_returns_expires_at: float = 0.0
+    _invalid_ticker_until: Dict[str, float] = {}
 
     MARKET_TZ = ZoneInfo("America/Santiago")
     MARKET_OPEN = time(
@@ -61,13 +63,26 @@ class MarketData:
         """Fetches all necessary data (Technicals, News, Status) in a single workflow.
         Reduces YFinance overhead significantly.
         """
+        ticker = MarketData.normalize_ticker(ticker)
+        now_ts = time_module.time()
+        blocked_until = MarketData._invalid_ticker_until.get(ticker, 0.0)
+        if blocked_until > now_ts:
+            return {
+                "is_active": False,
+                "current_price": 0,
+                "error": "Ticker temporarily skipped (no recent data)",
+            }
+
         try:
             stock = yf.Ticker(ticker)
             # 1. Fetch historical data (3 months handles everything)
             hist = MarketData._safe_history(stock, period="3mo")
             if hist.empty or len(hist) < 2:
                 # Delisted or invalid symbol: Return a neutral state to avoid hanging
+                MarketData._invalid_ticker_until[ticker] = now_ts + max(300, MarketData.INVALID_TICKER_COOLDOWN_SECONDS)
                 return {"is_active": False, "current_price": 0, "error": "No data/Delisted"}
+
+            MarketData._invalid_ticker_until.pop(ticker, None)
 
             close = hist['Close']
             current = close.iloc[-1]
@@ -210,8 +225,16 @@ class MarketData:
                 "news_text": news_text
             }
         except Exception as e:
+            MarketData._invalid_ticker_until[ticker] = time_module.time() + max(300, MarketData.INVALID_TICKER_COOLDOWN_SECONDS)
             print(f"Error in comprehensive data for {ticker}: {e}")
             return {"is_active": True, "error": str(e)}
+
+    @staticmethod
+    def normalize_ticker(ticker: str) -> str:
+        cleaned = (ticker or "").strip().upper()
+        if cleaned.startswith("$"):
+            cleaned = cleaned[1:]
+        return cleaned
 
     @staticmethod
     def _safe_history(stock: yf.Ticker, period: str, max_attempts: int = 3) -> pd.DataFrame:
