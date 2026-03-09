@@ -187,7 +187,16 @@ class PaperPortfolio:
             size = 1
         return size
 
-    def execute_order(self, ticker: str, signal: str, price: float, reasoning: str, confidence: float = 0.5):
+    def execute_order(
+        self,
+        ticker: str,
+        signal: str,
+        price: float,
+        reasoning: str,
+        confidence: float = 0.5,
+        amount_to_invest: float = None,
+        adv_20d: float = 0,
+    ):
         """Executes a paper trade using real market prices but virtual money."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -195,7 +204,12 @@ class PaperPortfolio:
             return
 
         if signal == "BUY":
-            size = self.calculate_position_size(price, confidence)
+            if amount_to_invest is not None:
+                size = int(float(amount_to_invest) / price)
+                if size == 0 and self.balance >= price and float(amount_to_invest) >= price:
+                    size = 1
+            else:
+                size = self.calculate_position_size(price, confidence)
             cost = size * price
 
             if size > 0 and self.balance >= cost:
