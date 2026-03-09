@@ -10,11 +10,15 @@ class RiskEngine:
     """Portfolio-level risk checks for buy decisions."""
 
     def __init__(self):
-        self.max_position_pct = float(os.environ.get("RISK_MAX_POSITION_PCT", 0.24))
-        self.max_sector_pct = float(os.environ.get("RISK_MAX_SECTOR_PCT", 0.55))
-        self.max_total_invested_pct = float(os.environ.get("RISK_MAX_TOTAL_INVESTED_PCT", 0.98))
-        self.max_open_positions = int(os.environ.get("RISK_MAX_OPEN_POSITIONS", 18))
-        self.min_order_clp = float(os.environ.get("RISK_MIN_ORDER_CLP", 25000))
+        is_hosted = any(
+            os.environ.get(flag)
+            for flag in ("RENDER", "RENDER_SERVICE_ID", "RAILWAY_ENVIRONMENT", "K_SERVICE")
+        )
+        self.max_position_pct = float(os.environ.get("RISK_MAX_POSITION_PCT", 0.30 if is_hosted else 0.24))
+        self.max_sector_pct = float(os.environ.get("RISK_MAX_SECTOR_PCT", 0.65 if is_hosted else 0.55))
+        self.max_total_invested_pct = float(os.environ.get("RISK_MAX_TOTAL_INVESTED_PCT", 0.99 if is_hosted else 0.98))
+        self.max_open_positions = int(os.environ.get("RISK_MAX_OPEN_POSITIONS", 24 if is_hosted else 18))
+        self.min_order_clp = float(os.environ.get("RISK_MIN_ORDER_CLP", 15000 if is_hosted else 25000))
 
     @staticmethod
     def _portfolio_values(

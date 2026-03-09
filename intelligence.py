@@ -109,20 +109,26 @@ class IntelligenceLayer:
         ]
         self.prioritize_groq = os.environ.get("PRIORITIZE_GROQ", "1").strip().lower() in {"1", "true", "yes", "on"}
         self.gemini_min_interval_seconds = _env_float("GEMINI_MIN_INTERVAL_SECONDS", local_default=13, hosted_default=18)
-        self.gemini_429_cooldown_seconds = _env_float("GEMINI_429_COOLDOWN_SECONDS", local_default=60, hosted_default=90)
+        self.gemini_429_cooldown_seconds = _env_float("GEMINI_429_COOLDOWN_SECONDS", local_default=60, hosted_default=180)
+        self.gemini_max_models_per_call = _env_int("GEMINI_MAX_MODELS_PER_CALL", local_default=2, hosted_default=1)
+        self.gemini_max_attempts = _env_int("GEMINI_MAX_ATTEMPTS", local_default=2, hosted_default=1)
+        self.allow_gemini_during_groq_cooldown = os.environ.get(
+            "ALLOW_GEMINI_DURING_GROQ_COOLDOWN",
+            "0" if _is_hosted_runtime() else "1",
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._gemini_next_allowed_at = 0.0
         self.context_service = ContextService()
         self.auth_failure_cooldown_seconds = _env_int("LLM_AUTH_FAILURE_COOLDOWN_SECONDS", local_default=1800, hosted_default=1800)
         self.rate_limit_cooldown_seconds = _env_int("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", local_default=120, hosted_default=180)
         self.tpd_cooldown_seconds = _env_int("GROQ_TPD_COOLDOWN_SECONDS", local_default=900, hosted_default=900)
         self.fast_fail_on_429 = os.environ.get("GROQ_FAST_FAIL_ON_429", "1").strip().lower() in {"1", "true", "yes", "on"}
-        self.max_bulk_prompt_chars = _env_int("MAX_BULK_PROMPT_CHARS", local_default=12000, hosted_default=10000)
-        self.max_news_chars = _env_int("MAX_NEWS_CHARS", local_default=220, hosted_default=180)
-        self.max_llm_tickers_per_call = _env_int("MAX_LLM_TICKERS_PER_CALL", local_default=14, hosted_default=10)
-        self.ml_only_buy_threshold = float(os.environ.get("ML_ONLY_BUY_THRESHOLD", 0.53))
-        self.ml_only_sell_threshold = float(os.environ.get("ML_ONLY_SELL_THRESHOLD", 0.33))
+        self.max_bulk_prompt_chars = _env_int("MAX_BULK_PROMPT_CHARS", local_default=12000, hosted_default=8000)
+        self.max_news_chars = _env_int("MAX_NEWS_CHARS", local_default=220, hosted_default=140)
+        self.max_llm_tickers_per_call = _env_int("MAX_LLM_TICKERS_PER_CALL", local_default=14, hosted_default=8)
+        self.ml_only_buy_threshold = _env_float("ML_ONLY_BUY_THRESHOLD", local_default=0.53, hosted_default=0.48)
+        self.ml_only_sell_threshold = _env_float("ML_ONLY_SELL_THRESHOLD", local_default=0.33, hosted_default=0.36)
         self._llm_cooldown_until = 0.0
-        self.min_buy_probability = float(os.environ.get("MIN_BUY_PROBABILITY", 0.40))
+        self.min_buy_probability = _env_float("MIN_BUY_PROBABILITY", local_default=0.40, hosted_default=0.34)
         self.workflow = self._build_graph()
 
     @staticmethod
@@ -214,7 +220,12 @@ class IntelligenceLayer:
         if not self.gemini_api_key:
             return None
 
+        now = time.time()
+        if now < self._gemini_next_allowed_at:
+            return None
+
         model_candidates = [self.gemini_model] + [m for m in self.gemini_fallback_models if m != self.gemini_model]
+        model_candidates = model_candidates[: max(1, self.gemini_max_models_per_call)]
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.0},
@@ -225,11 +236,11 @@ class IntelligenceLayer:
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{model_name}:generateContent?key={self.gemini_api_key}"
             )
-            for attempt in range(2):
+            for attempt in range(max(1, self.gemini_max_attempts)):
                 try:
                     now = time.time()
                     if now < self._gemini_next_allowed_at:
-                        time.sleep(self._gemini_next_allowed_at - now)
+                        return None
 
                     response = requests.post(url, json=payload, timeout=30)
                     if response.status_code == 429:
@@ -243,10 +254,7 @@ class IntelligenceLayer:
                         cooldown = max(self.gemini_429_cooldown_seconds, retry_after, self.gemini_min_interval_seconds)
                         self._gemini_next_allowed_at = max(self._gemini_next_allowed_at, time.time() + cooldown)
                         print(f"⚠️ Gemini 429 on {model_name}. Cooldown ~{cooldown:.0f}s")
-                        if attempt == 0:
-                            time.sleep(min(3.0, cooldown))
-                            continue
-                        break
+                        return None
 
                     self._gemini_next_allowed_at = time.time() + self.gemini_min_interval_seconds
                     response.raise_for_status()
@@ -266,8 +274,7 @@ class IntelligenceLayer:
                             self._gemini_next_allowed_at,
                             time.time() + self.gemini_429_cooldown_seconds,
                         )
-                        time.sleep(1.5)
-                        continue
+                        return None
                     print(f"⚠️ Gemini error on {model_name}: {exc}")
                     break
 
@@ -376,6 +383,9 @@ class IntelligenceLayer:
             return schema_class()
 
         # Fallback path: Gemini
+        if (not self.allow_gemini_during_groq_cooldown) and (time.time() < self._llm_cooldown_until):
+            return schema_class()
+
         gemini_res = self._invoke_gemini(prompt)
         if gemini_res is not None:
             parsed = self._safe_parse_json(gemini_res.content, schema_class)

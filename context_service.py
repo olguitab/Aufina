@@ -61,7 +61,13 @@ class ContextService:
             if m.strip()
         ]
         self.gemini_min_interval_seconds = _env_float("GEMINI_MIN_INTERVAL_SECONDS", local_default=13, hosted_default=18)
-        self.gemini_429_cooldown_seconds = _env_float("GEMINI_429_COOLDOWN_SECONDS", local_default=60, hosted_default=90)
+        self.gemini_429_cooldown_seconds = _env_float("GEMINI_429_COOLDOWN_SECONDS", local_default=60, hosted_default=180)
+        self.gemini_max_models_per_call = _env_int("GEMINI_MAX_MODELS_PER_CALL", local_default=2, hosted_default=1)
+        self.gemini_max_attempts = _env_int("GEMINI_MAX_ATTEMPTS", local_default=2, hosted_default=1)
+        self.allow_gemini_fallback_when_groq_limited = os.environ.get(
+            "ALLOW_GEMINI_WHEN_GROQ_LIMITED",
+            "0" if _is_hosted_runtime() else "1",
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._gemini_next_allowed_at = 0.0
         self.news_api_key = os.environ.get("NEWS_API_KEY")
         self.news_api_url = os.environ.get("NEWS_API_URL", "https://newsapi.org/v2/everything")
@@ -71,9 +77,13 @@ class ContextService:
         )
         self.news_api_page_size = int(os.environ.get("NEWS_API_PAGE_SIZE", 8))
         self.news_engine = NewsEngine()
-        self.context_cache_ttl = _env_int("CONTEXT_CACHE_TTL_SECONDS", local_default=300, hosted_default=360)
+        self.context_cache_ttl = _env_int("CONTEXT_CACHE_TTL_SECONDS", local_default=300, hosted_default=900)
         self.rate_limit_cooldown_seconds = _env_int("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", local_default=120, hosted_default=180)
         self.tpd_cooldown_seconds = _env_int("GROQ_TPD_COOLDOWN_SECONDS", local_default=900, hosted_default=900)
+        self.enable_headline_sentiment_llm = os.environ.get(
+            "CONTEXT_ENABLE_HEADLINE_SENTIMENT_LLM",
+            "0" if _is_hosted_runtime() else "1",
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._cached_context: ContextAnalysis | None = None
         self._cache_expires_at = 0.0
         self._rate_limited_until = 0.0
@@ -175,6 +185,8 @@ JSON:"""
 
     def _invoke_with_backoff(self, prompt: str, max_attempts: int = 2):
         if self.llm is None:
+            if not self.allow_gemini_fallback_when_groq_limited:
+                raise RuntimeError("Context LLM unavailable and Gemini fallback disabled during cooldown")
             gemini_res = self._invoke_gemini(prompt)
             if gemini_res is not None:
                 return gemini_res
@@ -215,6 +227,8 @@ JSON:"""
                     if is_tpd_limit:
                         cooldown = max(self.tpd_cooldown_seconds, retry_after)
                         self._activate_cooldown(cooldown, "TPD limit")
+                        if not self.allow_gemini_fallback_when_groq_limited:
+                            break
                         break
 
                     wait_seconds = min(8, 2 ** (attempt + 1)) + random.uniform(0.0, 0.8)
@@ -223,6 +237,8 @@ JSON:"""
 
                     if attempt == max_attempts - 1:
                         self._activate_cooldown(max(self.rate_limit_cooldown_seconds, retry_after), "429 recurrente")
+                        if not self.allow_gemini_fallback_when_groq_limited:
+                            break
                 else:
                     time.sleep(1.5)
 
@@ -232,7 +248,12 @@ JSON:"""
         if not self.gemini_api_key:
             return None
 
+        now = time.time()
+        if now < self._gemini_next_allowed_at:
+            return None
+
         model_candidates = [self.gemini_model] + [m for m in self.gemini_fallback_models if m != self.gemini_model]
+        model_candidates = model_candidates[: max(1, self.gemini_max_models_per_call)]
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.0},
@@ -243,13 +264,26 @@ JSON:"""
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{model_name}:generateContent?key={self.gemini_api_key}"
             )
-            for attempt in range(2):
+            for attempt in range(max(1, self.gemini_max_attempts)):
                 try:
                     now = time.time()
                     if now < self._gemini_next_allowed_at:
-                        time.sleep(self._gemini_next_allowed_at - now)
+                        return None
 
                     response = requests.post(url, json=payload, timeout=30)
+                    if response.status_code == 429:
+                        retry_after_header = response.headers.get("Retry-After")
+                        retry_after = 0.0
+                        try:
+                            retry_after = float(retry_after_header) if retry_after_header else 0.0
+                        except Exception:
+                            retry_after = 0.0
+
+                        cooldown = max(self.gemini_429_cooldown_seconds, retry_after, self.gemini_min_interval_seconds)
+                        self._gemini_next_allowed_at = max(self._gemini_next_allowed_at, time.time() + cooldown)
+                        print(f"⚠️ Context Gemini 429 on {model_name}. Cooldown ~{cooldown:.0f}s")
+                        return None
+
                     self._gemini_next_allowed_at = time.time() + self.gemini_min_interval_seconds
                     response.raise_for_status()
                     data = response.json()
@@ -268,8 +302,7 @@ JSON:"""
                             self._gemini_next_allowed_at,
                             time.time() + self.gemini_429_cooldown_seconds,
                         )
-                        time.sleep(1.5)
-                        continue
+                        return None
                     break
 
         print("⚠️ Context Gemini fallback failed across configured models")
@@ -376,8 +409,12 @@ JSON:"""
             
             parsed = ContextAnalysis(**data)
 
-            # Blend macro summary score with direct headline sentiment score
-            headline_sentiment = self._score_headlines_sentiment(context_text)
+            # Blend macro summary score with optional direct headline sentiment score
+            headline_sentiment = (
+                self._score_headlines_sentiment(context_text)
+                if self.enable_headline_sentiment_llm
+                else float(parsed.global_score)
+            )
             blended = (0.75 * float(parsed.global_score)) + (0.25 * float(headline_sentiment))
             parsed.global_score = max(-1.0, min(1.0, blended))
 

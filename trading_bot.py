@@ -77,15 +77,15 @@ def _extra_tickers_from_env() -> list[str]:
 
 
 # Complete Universe (IPSA + expanded Chile coverage + optional global/extra via env)
-_include_global_default = False if _is_hosted_runtime() else True
+_include_global_default = True if _is_hosted_runtime() else True
 _include_global = _env_flag("TRADING_INCLUDE_GLOBAL", default=_include_global_default)
 _base_watchlist = get_trading_watchlist(include_global=_include_global)
-_max_watchlist_size = max(1, _env_int("TRADING_MAX_TICKERS", local_default=24, hosted_default=16))
+_max_watchlist_size = max(1, _env_int("TRADING_MAX_TICKERS", local_default=24, hosted_default=28))
 WATCHLIST = list(dict.fromkeys(_base_watchlist + _extra_tickers_from_env()))[:_max_watchlist_size]
 
-INTERVAL_SECONDS = _env_int("TRADING_INTERVAL_SECONDS", local_default=120, hosted_default=180)
-LLM_BATCH_SIZE = max(1, _env_int("LLM_BATCH_SIZE", local_default=6, hosted_default=4))
-MARKET_DATA_MAX_WORKERS = max(1, _env_int("MARKET_DATA_MAX_WORKERS", local_default=4, hosted_default=2))
+INTERVAL_SECONDS = _env_int("TRADING_INTERVAL_SECONDS", local_default=120, hosted_default=90)
+LLM_BATCH_SIZE = max(1, _env_int("LLM_BATCH_SIZE", local_default=6, hosted_default=6))
+MARKET_DATA_MAX_WORKERS = max(1, _env_int("MARKET_DATA_MAX_WORKERS", local_default=4, hosted_default=3))
 
 def send_telegram(message: str, chat_id_override: str = None):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -312,17 +312,46 @@ class AutonomousBot:
                 for tk, qty in self.paper_portfolio.positions.items()
                 if qty > 0
             }
-            ok, reason = self.risk_engine.validate_buy(
-                ticker=ticker,
-                proposed_qty=suggested_qty,
-                proposed_price=price,
-                cash_balance=self.paper_portfolio.balance,
-                positions=self.paper_portfolio.positions,
-                ticker_prices=market_prices,
-            )
+            min_order_value = float(getattr(self.risk_engine, "min_order_clp", 0.0) or 0.0)
+            min_qty = max(1, int(min_order_value / price)) if min_order_value > 0 else 1
+            proposed_qty = int(suggested_qty)
+            ok = False
+            reason = ""
+            while proposed_qty >= min_qty:
+                ok, reason = self.risk_engine.validate_buy(
+                    ticker=ticker,
+                    proposed_qty=proposed_qty,
+                    proposed_price=price,
+                    cash_balance=self.paper_portfolio.balance,
+                    positions=self.paper_portfolio.positions,
+                    ticker_prices=market_prices,
+                )
+                if ok:
+                    break
+                reduced_qty = int(proposed_qty * 0.75)
+                if reduced_qty == proposed_qty:
+                    reduced_qty = proposed_qty - 1
+                proposed_qty = reduced_qty
+
             if not ok:
                 logger.info(f"[PAPER][RISK BLOCK] BUY {ticker} bloqueado: {reason}")
                 return
+
+            if proposed_qty < suggested_qty:
+                logger.info(
+                    f"[PAPER][RISK ADJUST] BUY {ticker}: qty ajustada {suggested_qty} -> {proposed_qty} para cumplir riesgo"
+                )
+
+            max_invest = proposed_qty * price
+            self.paper_portfolio.execute_order(
+                ticker=ticker,
+                signal=signal,
+                price=price,
+                reasoning=reasoning,
+                confidence=confidence,
+                amount_to_invest=max_invest,
+            )
+            return
         elif signal == "SELL":
             if self.paper_portfolio.positions.get(ticker, 0) <= 0:
                 return
