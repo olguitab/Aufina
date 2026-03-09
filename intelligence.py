@@ -345,9 +345,9 @@ class IntelligenceLayer:
             # and let caller-level ML fallback resolve outputs.
             return schema_class()
 
-        # Strict priority mode: if Groq is configured, do not use Gemini fallback.
-        # This keeps provider behavior stable and avoids cross-provider throttling noise.
-        if self.prioritize_groq and self.llm is not None:
+        # Strict priority mode: keep Groq-first behavior only while Groq is actually available.
+        # If Groq entered cooldown (e.g., 429/TPD), allow Gemini fallback to avoid flat HOLD-only cycles.
+        if self.prioritize_groq and self.llm is not None and self.llm_available():
             return schema_class()
 
         # Fallback path: Gemini
