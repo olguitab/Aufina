@@ -37,8 +37,33 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 load_dotenv()
-# Complete Universe (IPSA + expanded Chile coverage)
-WATCHLIST = get_trading_watchlist(include_global=False)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _extra_tickers_from_env() -> list[str]:
+    raw = os.environ.get("TRADING_EXTRA_TICKERS", "")
+    if not raw or not raw.strip():
+        return []
+    cleaned = []
+    for part in raw.split(","):
+        tk = part.strip().upper()
+        if tk.startswith("$"):
+            tk = tk[1:]
+        if tk:
+            cleaned.append(tk)
+    return list(dict.fromkeys(cleaned))
+
+
+# Complete Universe (IPSA + expanded Chile coverage + optional global/extra via env)
+_include_global = _env_flag("TRADING_INCLUDE_GLOBAL", default=False)
+_base_watchlist = get_trading_watchlist(include_global=_include_global)
+WATCHLIST = list(dict.fromkeys(_base_watchlist + _extra_tickers_from_env()))
 
 INTERVAL_SECONDS = int(os.environ.get("TRADING_INTERVAL_SECONDS", 60)) # Default 60 seconds for stable continuous loop
 LLM_BATCH_SIZE = max(1, int(os.environ.get("LLM_BATCH_SIZE", 14)))
@@ -84,6 +109,12 @@ class AutonomousBot:
                     self.last_update_id = resp["result"][-1]["update_id"]
             except Exception:
                 pass
+        logger.info(
+            "Universe config: "
+            f"tickers={len(WATCHLIST)} | "
+            f"include_global={_include_global} | "
+            f"extra_tickers={len(_extra_tickers_from_env())}"
+        )
 
     def _send_automatic_telegram(self, message: str, chat_id_override: str = None):
         """Sends Telegram alerts only when automatic notifications are enabled."""

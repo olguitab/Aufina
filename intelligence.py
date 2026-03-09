@@ -82,14 +82,16 @@ class IntelligenceLayer:
             ).split(",")
             if m.strip()
         ]
+        self.prioritize_groq = os.environ.get("PRIORITIZE_GROQ", "1").strip().lower() in {"1", "true", "yes", "on"}
         self.gemini_min_interval_seconds = float(os.environ.get("GEMINI_MIN_INTERVAL_SECONDS", 13))
         self.gemini_429_cooldown_seconds = float(os.environ.get("GEMINI_429_COOLDOWN_SECONDS", 60))
         self._gemini_next_allowed_at = 0.0
         self.context_service = ContextService()
+        self.auth_failure_cooldown_seconds = int(os.environ.get("LLM_AUTH_FAILURE_COOLDOWN_SECONDS", 1800))
         self.rate_limit_cooldown_seconds = int(os.environ.get("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", 180))
         self.tpd_cooldown_seconds = int(os.environ.get("GROQ_TPD_COOLDOWN_SECONDS", 900))
         self.fast_fail_on_429 = os.environ.get("GROQ_FAST_FAIL_ON_429", "1").strip().lower() in {"1", "true", "yes", "on"}
-        self.max_bulk_prompt_chars = int(os.environ.get("MAX_BULK_PROMPT_CHARS", 18000))
+        self.max_bulk_prompt_chars = int(os.environ.get("MAX_BULK_PROMPT_CHARS", 12000))
         self.max_news_chars = int(os.environ.get("MAX_NEWS_CHARS", 220))
         self.max_llm_tickers_per_call = int(os.environ.get("MAX_LLM_TICKERS_PER_CALL", 14))
         self.ml_only_buy_threshold = float(os.environ.get("ML_ONLY_BUY_THRESHOLD", 0.57))
@@ -291,6 +293,7 @@ class IntelligenceLayer:
     def _invoke_with_backoff(self, prompt, schema_class):
         """Invoke LLM with pacing and exponential backoff for rate limits."""
         can_try_groq = self.llm is not None and self.llm_available()
+        payload_too_large = False
 
         if can_try_groq:
             time.sleep(1.2)
@@ -303,8 +306,13 @@ class IntelligenceLayer:
                         return parsed
                 except Exception as e:
                     err_msg = str(e).lower()
+                    if "401" in err_msg or "unauthorized" in err_msg or "invalid api key" in err_msg:
+                        self._activate_cooldown(self.auth_failure_cooldown_seconds, "auth failure (401)")
+                        print("⚠️ Groq auth failed. Verifica GROQ_API_KEY en entorno.")
+                        break
                     if "413" in err_msg or "payload too large" in err_msg:
                         print("⚠️ Groq payload too large (413). Skipping provider and using fallback.")
+                        payload_too_large = True
                         break
                     if "rate_limit" in err_msg or "429" in err_msg or "too many requests" in err_msg:
                         retry_after = self._retry_after_from_error(str(e))
@@ -330,6 +338,16 @@ class IntelligenceLayer:
                         print(f"⚠️ Groq LLM error: {e}")
                         break
                 time.sleep(1.0)
+
+        if payload_too_large:
+            # Payload size issue is deterministic for this prompt; skip secondary LLM providers
+            # and let caller-level ML fallback resolve outputs.
+            return schema_class()
+
+        # Strict priority mode: if Groq is configured, do not use Gemini fallback.
+        # This keeps provider behavior stable and avoids cross-provider throttling noise.
+        if self.prioritize_groq and self.llm is not None:
+            return schema_class()
 
         # Fallback path: Gemini
         gemini_res = self._invoke_gemini(prompt)
@@ -547,25 +565,49 @@ JSON:"""
             )
             llm_context = llm_context[: self.max_llm_tickers_per_call]
             
-        prompt = f"""Role: Institutional Quant Lead.
-Task: Analyze a batch of {len(llm_context)} stocks from the Chilean market universe.
-GLOBAL CONTEXT SCORE: {context_score} ({context_data.summary})
+        llm_payload = [
+            {
+                "ticker": item.get("ticker"),
+                "tech": item.get("tech", {}),
+                "ml_prob": float(item.get("ml_prob", 0.5)),
+                "ml_expected_return_3d": float(item.get("ml_expected_return_3d", 0.0)),
+                "news": (item.get("news", "") or "")[: max(80, self.max_news_chars)],
+            }
+            for item in llm_context
+        ]
 
-INPUT DATA (JSON):
-{json.dumps(llm_context, separators=(',', ':'))}
+        prompt_template = (
+            "Role: Institutional Quant Lead.\n"
+            "Task: Analyze a batch of {batch_len} stocks from the Chilean market universe.\n"
+            "GLOBAL CONTEXT SCORE: {context_score} ({summary})\n\n"
+            "INPUT DATA (JSON):\n"
+            "{payload_json}\n\n"
+            "YOUR TASK:\n"
+            "HYPER-AGGRESSIVE: SIGNAL: BUY IS THE DEFAULT. Avoid 'HOLD' at all costs.\n\n"
+            "REQUIRED OUTPUT STRUCTURE:\n"
+            "Return a single JSON object where keys are the tickers and values are the analysis objects.\n"
+            "{{\n"
+            "  \"results\": {{\n"
+            "        \"TICKER_1\": {{ \"ml_confidence\": float, \"quant_score\": 0-10, \"trend\": \"Bullish\"|\"Bearish\"|\"Sideways\", \"signal\": \"BUY\"|\"HOLD\"|\"SELL\", \"reasoning\": \"str\", \"quant_reasoning\": \"str\" }},\n"
+            "    ...\n"
+            "  }}\n"
+            "}}\n"
+            "JSON:"
+        )
 
-YOUR TASK:
-HYPER-AGGRESSIVE: SIGNAL: BUY IS THE DEFAULT. Avoid 'HOLD' at all costs.
-
-REQUIRED OUTPUT STRUCTURE:
-Return a single JSON object where keys are the tickers and values are the analysis objects.
-{{
-  "results": {{
-        "TICKER_1": {{ "ml_confidence": float, "quant_score": 0-10, "trend": "Bullish"|"Bearish"|"Sideways", "signal": "BUY"|"HOLD"|"SELL", "reasoning": "str", "quant_reasoning": "str" }},
-    ...
-  }}
-}}
-JSON:"""
+        summary_text = str(getattr(context_data, "summary", ""))[:120]
+        while llm_payload:
+            payload_json = json.dumps(llm_payload, separators=(",", ":"))
+            prompt = prompt_template.format(
+                batch_len=len(llm_payload),
+                context_score=context_score,
+                summary=summary_text,
+                payload_json=payload_json,
+            )
+            if len(prompt) <= self.max_bulk_prompt_chars or len(llm_payload) == 1:
+                break
+            new_len = max(1, int(len(llm_payload) * 0.75))
+            llm_payload = llm_payload[:new_len]
 
         bulk_res = self._invoke_with_backoff(prompt, BulkUnifiedAnalysis)
         

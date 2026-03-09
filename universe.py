@@ -2,6 +2,12 @@ import os
 from typing import List
 
 
+DEFAULT_EXCLUDED_TICKERS = (
+    "SECURITY.SN,CENCOSHOPP.SN,ORO_BLANCO.SN,PILMAIQUEN.SN,"
+    "NUEVAPOLAR.SN,MULTIFOODS.SN,INVERMAR.SN,BICECORP.SN,AZULAZUL.SN"
+)
+
+
 # Core IPSA names (high liquidity)
 IPSA_WATCHLIST: List[str] = [
     'CHILE.SN', 'SQM-B.SN', 'CENCOSUD.SN', 'ENELAM.SN', 'FALABELLA.SN', 'LTM.SN',
@@ -83,10 +89,9 @@ def _normalize_ticker(ticker: str) -> str:
 
 
 def _excluded_tickers() -> set:
-    raw = os.environ.get(
-        "EXCLUDED_TICKERS",
-        "SECURITY.SN,CENCOSHOPP.SN,ORO_BLANCO.SN,PILMAIQUEN.SN,NUEVAPOLAR.SN,MULTIFOODS.SN,INVERMAR.SN,BICECORP.SN,AZULAZUL.SN",
-    )
+    raw = os.environ.get("EXCLUDED_TICKERS", DEFAULT_EXCLUDED_TICKERS)
+    if raw is None or not str(raw).strip():
+        raw = DEFAULT_EXCLUDED_TICKERS
     return {_normalize_ticker(t) for t in raw.split(",") if t.strip()}
 
 
