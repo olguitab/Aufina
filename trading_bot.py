@@ -61,11 +61,11 @@ def _extra_tickers_from_env() -> list[str]:
 
 
 # Complete Universe (IPSA + expanded Chile coverage + optional global/extra via env)
-_include_global = _env_flag("TRADING_INCLUDE_GLOBAL", default=False)
+_include_global = _env_flag("TRADING_INCLUDE_GLOBAL", default=True)
 _base_watchlist = get_trading_watchlist(include_global=_include_global)
 WATCHLIST = list(dict.fromkeys(_base_watchlist + _extra_tickers_from_env()))
 
-INTERVAL_SECONDS = int(os.environ.get("TRADING_INTERVAL_SECONDS", 60)) # Default 60 seconds for stable continuous loop
+INTERVAL_SECONDS = int(os.environ.get("TRADING_INTERVAL_SECONDS", 45)) # Default 45 seconds (aggressive profile)
 LLM_BATCH_SIZE = max(1, int(os.environ.get("LLM_BATCH_SIZE", 14)))
 
 def send_telegram(message: str, chat_id_override: str = None):

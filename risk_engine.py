@@ -10,10 +10,10 @@ class RiskEngine:
     """Portfolio-level risk checks for buy decisions."""
 
     def __init__(self):
-        self.max_position_pct = float(os.environ.get("RISK_MAX_POSITION_PCT", 0.20))
-        self.max_sector_pct = float(os.environ.get("RISK_MAX_SECTOR_PCT", 0.45))
-        self.max_total_invested_pct = float(os.environ.get("RISK_MAX_TOTAL_INVESTED_PCT", 0.90))
-        self.max_open_positions = int(os.environ.get("RISK_MAX_OPEN_POSITIONS", 12))
+        self.max_position_pct = float(os.environ.get("RISK_MAX_POSITION_PCT", 0.24))
+        self.max_sector_pct = float(os.environ.get("RISK_MAX_SECTOR_PCT", 0.55))
+        self.max_total_invested_pct = float(os.environ.get("RISK_MAX_TOTAL_INVESTED_PCT", 0.98))
+        self.max_open_positions = int(os.environ.get("RISK_MAX_OPEN_POSITIONS", 18))
         self.min_order_clp = float(os.environ.get("RISK_MIN_ORDER_CLP", 25000))
 
     @staticmethod

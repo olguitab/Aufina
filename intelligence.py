@@ -88,16 +88,16 @@ class IntelligenceLayer:
         self._gemini_next_allowed_at = 0.0
         self.context_service = ContextService()
         self.auth_failure_cooldown_seconds = int(os.environ.get("LLM_AUTH_FAILURE_COOLDOWN_SECONDS", 1800))
-        self.rate_limit_cooldown_seconds = int(os.environ.get("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", 180))
+        self.rate_limit_cooldown_seconds = int(os.environ.get("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", 120))
         self.tpd_cooldown_seconds = int(os.environ.get("GROQ_TPD_COOLDOWN_SECONDS", 900))
         self.fast_fail_on_429 = os.environ.get("GROQ_FAST_FAIL_ON_429", "1").strip().lower() in {"1", "true", "yes", "on"}
         self.max_bulk_prompt_chars = int(os.environ.get("MAX_BULK_PROMPT_CHARS", 12000))
         self.max_news_chars = int(os.environ.get("MAX_NEWS_CHARS", 220))
         self.max_llm_tickers_per_call = int(os.environ.get("MAX_LLM_TICKERS_PER_CALL", 14))
-        self.ml_only_buy_threshold = float(os.environ.get("ML_ONLY_BUY_THRESHOLD", 0.57))
-        self.ml_only_sell_threshold = float(os.environ.get("ML_ONLY_SELL_THRESHOLD", 0.35))
+        self.ml_only_buy_threshold = float(os.environ.get("ML_ONLY_BUY_THRESHOLD", 0.53))
+        self.ml_only_sell_threshold = float(os.environ.get("ML_ONLY_SELL_THRESHOLD", 0.33))
         self._llm_cooldown_until = 0.0
-        self.min_buy_probability = float(os.environ.get("MIN_BUY_PROBABILITY", 0.45))
+        self.min_buy_probability = float(os.environ.get("MIN_BUY_PROBABILITY", 0.40))
         self.workflow = self._build_graph()
 
     @staticmethod

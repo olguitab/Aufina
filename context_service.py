@@ -47,7 +47,7 @@ class ContextService:
         self.news_api_page_size = int(os.environ.get("NEWS_API_PAGE_SIZE", 8))
         self.news_engine = NewsEngine()
         self.context_cache_ttl = int(os.environ.get("CONTEXT_CACHE_TTL_SECONDS", 300))
-        self.rate_limit_cooldown_seconds = int(os.environ.get("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", 180))
+        self.rate_limit_cooldown_seconds = int(os.environ.get("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", 120))
         self.tpd_cooldown_seconds = int(os.environ.get("GROQ_TPD_COOLDOWN_SECONDS", 900))
         self._cached_context: ContextAnalysis | None = None
         self._cache_expires_at = 0.0
