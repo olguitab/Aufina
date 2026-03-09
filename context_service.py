@@ -10,6 +10,31 @@ from pydantic import BaseModel, Field
 import requests
 from ingestion import NewsEngine
 
+
+def _is_hosted_runtime() -> bool:
+    return any(
+        os.environ.get(flag)
+        for flag in ("RENDER", "RENDER_SERVICE_ID", "RAILWAY_ENVIRONMENT", "K_SERVICE")
+    )
+
+
+def _env_int(name: str, local_default: int, hosted_default: int | None = None) -> int:
+    raw = os.environ.get(name)
+    if raw is not None and str(raw).strip() != "":
+        return int(raw)
+    if hosted_default is not None and _is_hosted_runtime():
+        return int(hosted_default)
+    return int(local_default)
+
+
+def _env_float(name: str, local_default: float, hosted_default: float | None = None) -> float:
+    raw = os.environ.get(name)
+    if raw is not None and str(raw).strip() != "":
+        return float(raw)
+    if hosted_default is not None and _is_hosted_runtime():
+        return float(hosted_default)
+    return float(local_default)
+
 class ContextAnalysis(BaseModel):
     global_score: float = Field(description="Score from -1.0 (Catastrophic) to 1.0 (Excellent) for the market context")
     event_type: str = Field(description="Category of the event: Law, Catastrophe, Economic, Political, etc.")
@@ -35,8 +60,8 @@ class ContextService:
             ).split(",")
             if m.strip()
         ]
-        self.gemini_min_interval_seconds = float(os.environ.get("GEMINI_MIN_INTERVAL_SECONDS", 13))
-        self.gemini_429_cooldown_seconds = float(os.environ.get("GEMINI_429_COOLDOWN_SECONDS", 60))
+        self.gemini_min_interval_seconds = _env_float("GEMINI_MIN_INTERVAL_SECONDS", local_default=13, hosted_default=18)
+        self.gemini_429_cooldown_seconds = _env_float("GEMINI_429_COOLDOWN_SECONDS", local_default=60, hosted_default=90)
         self._gemini_next_allowed_at = 0.0
         self.news_api_key = os.environ.get("NEWS_API_KEY")
         self.news_api_url = os.environ.get("NEWS_API_URL", "https://newsapi.org/v2/everything")
@@ -46,9 +71,9 @@ class ContextService:
         )
         self.news_api_page_size = int(os.environ.get("NEWS_API_PAGE_SIZE", 8))
         self.news_engine = NewsEngine()
-        self.context_cache_ttl = int(os.environ.get("CONTEXT_CACHE_TTL_SECONDS", 300))
-        self.rate_limit_cooldown_seconds = int(os.environ.get("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", 120))
-        self.tpd_cooldown_seconds = int(os.environ.get("GROQ_TPD_COOLDOWN_SECONDS", 900))
+        self.context_cache_ttl = _env_int("CONTEXT_CACHE_TTL_SECONDS", local_default=300, hosted_default=360)
+        self.rate_limit_cooldown_seconds = _env_int("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", local_default=120, hosted_default=180)
+        self.tpd_cooldown_seconds = _env_int("GROQ_TPD_COOLDOWN_SECONDS", local_default=900, hosted_default=900)
         self._cached_context: ContextAnalysis | None = None
         self._cache_expires_at = 0.0
         self._rate_limited_until = 0.0

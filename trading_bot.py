@@ -39,6 +39,22 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 
+def _is_hosted_runtime() -> bool:
+    return any(
+        os.environ.get(flag)
+        for flag in ("RENDER", "RENDER_SERVICE_ID", "RAILWAY_ENVIRONMENT", "K_SERVICE")
+    )
+
+
+def _env_int(name: str, local_default: int, hosted_default: int | None = None) -> int:
+    raw = os.environ.get(name)
+    if raw is not None and str(raw).strip() != "":
+        return int(raw)
+    if hosted_default is not None and _is_hosted_runtime():
+        return int(hosted_default)
+    return int(local_default)
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -61,14 +77,15 @@ def _extra_tickers_from_env() -> list[str]:
 
 
 # Complete Universe (IPSA + expanded Chile coverage + optional global/extra via env)
-_include_global = _env_flag("TRADING_INCLUDE_GLOBAL", default=True)
+_include_global_default = False if _is_hosted_runtime() else True
+_include_global = _env_flag("TRADING_INCLUDE_GLOBAL", default=_include_global_default)
 _base_watchlist = get_trading_watchlist(include_global=_include_global)
-_max_watchlist_size = max(1, int(os.environ.get("TRADING_MAX_TICKERS", 24)))
+_max_watchlist_size = max(1, _env_int("TRADING_MAX_TICKERS", local_default=24, hosted_default=16))
 WATCHLIST = list(dict.fromkeys(_base_watchlist + _extra_tickers_from_env()))[:_max_watchlist_size]
 
-INTERVAL_SECONDS = int(os.environ.get("TRADING_INTERVAL_SECONDS", 120))
-LLM_BATCH_SIZE = max(1, int(os.environ.get("LLM_BATCH_SIZE", 6)))
-MARKET_DATA_MAX_WORKERS = max(1, int(os.environ.get("MARKET_DATA_MAX_WORKERS", 4)))
+INTERVAL_SECONDS = _env_int("TRADING_INTERVAL_SECONDS", local_default=120, hosted_default=180)
+LLM_BATCH_SIZE = max(1, _env_int("LLM_BATCH_SIZE", local_default=6, hosted_default=4))
+MARKET_DATA_MAX_WORKERS = max(1, _env_int("MARKET_DATA_MAX_WORKERS", local_default=4, hosted_default=2))
 
 def send_telegram(message: str, chat_id_override: str = None):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")

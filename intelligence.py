@@ -23,6 +23,31 @@ MACRO_RETURN_MAP = {
     "^VIX": "VIX",
 }
 
+
+def _is_hosted_runtime() -> bool:
+    return any(
+        os.environ.get(flag)
+        for flag in ("RENDER", "RENDER_SERVICE_ID", "RAILWAY_ENVIRONMENT", "K_SERVICE")
+    )
+
+
+def _env_int(name: str, local_default: int, hosted_default: int | None = None) -> int:
+    raw = os.environ.get(name)
+    if raw is not None and str(raw).strip() != "":
+        return int(raw)
+    if hosted_default is not None and _is_hosted_runtime():
+        return int(hosted_default)
+    return int(local_default)
+
+
+def _env_float(name: str, local_default: float, hosted_default: float | None = None) -> float:
+    raw = os.environ.get(name)
+    if raw is not None and str(raw).strip() != "":
+        return float(raw)
+    if hosted_default is not None and _is_hosted_runtime():
+        return float(hosted_default)
+    return float(local_default)
+
 # --- Schemas ---
 
 class UnifiedAnalysis(BaseModel):
@@ -83,17 +108,17 @@ class IntelligenceLayer:
             if m.strip()
         ]
         self.prioritize_groq = os.environ.get("PRIORITIZE_GROQ", "1").strip().lower() in {"1", "true", "yes", "on"}
-        self.gemini_min_interval_seconds = float(os.environ.get("GEMINI_MIN_INTERVAL_SECONDS", 13))
-        self.gemini_429_cooldown_seconds = float(os.environ.get("GEMINI_429_COOLDOWN_SECONDS", 60))
+        self.gemini_min_interval_seconds = _env_float("GEMINI_MIN_INTERVAL_SECONDS", local_default=13, hosted_default=18)
+        self.gemini_429_cooldown_seconds = _env_float("GEMINI_429_COOLDOWN_SECONDS", local_default=60, hosted_default=90)
         self._gemini_next_allowed_at = 0.0
         self.context_service = ContextService()
-        self.auth_failure_cooldown_seconds = int(os.environ.get("LLM_AUTH_FAILURE_COOLDOWN_SECONDS", 1800))
-        self.rate_limit_cooldown_seconds = int(os.environ.get("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", 120))
-        self.tpd_cooldown_seconds = int(os.environ.get("GROQ_TPD_COOLDOWN_SECONDS", 900))
+        self.auth_failure_cooldown_seconds = _env_int("LLM_AUTH_FAILURE_COOLDOWN_SECONDS", local_default=1800, hosted_default=1800)
+        self.rate_limit_cooldown_seconds = _env_int("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", local_default=120, hosted_default=180)
+        self.tpd_cooldown_seconds = _env_int("GROQ_TPD_COOLDOWN_SECONDS", local_default=900, hosted_default=900)
         self.fast_fail_on_429 = os.environ.get("GROQ_FAST_FAIL_ON_429", "1").strip().lower() in {"1", "true", "yes", "on"}
-        self.max_bulk_prompt_chars = int(os.environ.get("MAX_BULK_PROMPT_CHARS", 12000))
-        self.max_news_chars = int(os.environ.get("MAX_NEWS_CHARS", 220))
-        self.max_llm_tickers_per_call = int(os.environ.get("MAX_LLM_TICKERS_PER_CALL", 14))
+        self.max_bulk_prompt_chars = _env_int("MAX_BULK_PROMPT_CHARS", local_default=12000, hosted_default=10000)
+        self.max_news_chars = _env_int("MAX_NEWS_CHARS", local_default=220, hosted_default=180)
+        self.max_llm_tickers_per_call = _env_int("MAX_LLM_TICKERS_PER_CALL", local_default=14, hosted_default=10)
         self.ml_only_buy_threshold = float(os.environ.get("ML_ONLY_BUY_THRESHOLD", 0.53))
         self.ml_only_sell_threshold = float(os.environ.get("ML_ONLY_SELL_THRESHOLD", 0.33))
         self._llm_cooldown_until = 0.0
