@@ -114,7 +114,7 @@ class IntelligenceLayer:
         self.gemini_max_attempts = _env_int("GEMINI_MAX_ATTEMPTS", local_default=2, hosted_default=1)
         self.allow_gemini_during_groq_cooldown = os.environ.get(
             "ALLOW_GEMINI_DURING_GROQ_COOLDOWN",
-            "0" if _is_hosted_runtime() else "1",
+            "1",
         ).strip().lower() in {"1", "true", "yes", "on"}
         self._gemini_next_allowed_at = 0.0
         self.context_service = ContextService()

@@ -65,8 +65,8 @@ class ContextService:
         self.gemini_max_models_per_call = _env_int("GEMINI_MAX_MODELS_PER_CALL", local_default=2, hosted_default=1)
         self.gemini_max_attempts = _env_int("GEMINI_MAX_ATTEMPTS", local_default=2, hosted_default=1)
         self.allow_gemini_fallback_when_groq_limited = os.environ.get(
-            "ALLOW_GEMINI_WHEN_GROQ_LIMITED",
-            "0" if _is_hosted_runtime() else "1",
+            "ALLOW_GEMINI_DURING_GROQ_COOLDOWN",
+            "1",
         ).strip().lower() in {"1", "true", "yes", "on"}
         self._gemini_next_allowed_at = 0.0
         self.news_api_key = os.environ.get("NEWS_API_KEY")
