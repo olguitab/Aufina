@@ -146,7 +146,6 @@ stress_snapshot = risk_engine.run_stress_tests(
 )
 
 st.sidebar.title("Aureus Wealth")
-st.sidebar.caption(f"Usuario: {st.session_state.username}")
 page = st.sidebar.radio(
     "Secciones",
     [
