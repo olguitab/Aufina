@@ -3,6 +3,7 @@ import time
 import json
 import logging
 import threading
+import fcntl
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -138,6 +139,38 @@ class AutonomousBot:
             f"include_global={_include_global} | "
             f"extra_tickers={len(_extra_tickers_from_env())}"
         )
+        self._process_lock_fd = None
+        self._process_lock_path = os.path.join(
+            os.path.dirname(TRADING_DB_FILE),
+            "autonomous_bot.lock",
+        )
+
+    def _acquire_process_lock(self) -> bool:
+        """Ensures only one bot loop runs across processes (Streamlit reloads/workers)."""
+        if self._process_lock_fd is not None:
+            return True
+        try:
+            fd = os.open(self._process_lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.ftruncate(fd, 0)
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+            self._process_lock_fd = fd
+            return True
+        except OSError:
+            return False
+
+    def _release_process_lock(self) -> None:
+        if self._process_lock_fd is None:
+            return
+        try:
+            fcntl.flock(self._process_lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(self._process_lock_fd)
+        except OSError:
+            pass
+        self._process_lock_fd = None
 
     def _send_automatic_telegram(self, message: str, chat_id_override: str = None):
         """Sends Telegram alerts only when automatic notifications are enabled."""
@@ -762,6 +795,28 @@ class AutonomousBot:
             if is_candidate or ticker in self._get_active_tickers():
                 promising_batch[ticker] = data
 
+        if not promising_batch:
+            fallback_limit = max(1, int(os.environ.get("FALLBACK_ANALYSIS_TICKERS", 10)))
+            fallback_candidates = []
+            for ticker, data in ticker_data.items():
+                price = float(data.get("current_price", 0.0) or 0.0)
+                if price <= 0:
+                    continue
+                tech = data.get("technical_data", {})
+                momentum = abs(float(tech.get("DailyReturn_Pct", 0.0) or 0.0))
+                volatility = abs(float(tech.get("Volatility_20d", 0.0) or 0.0))
+                fallback_candidates.append((ticker, data, momentum + volatility))
+
+            fallback_candidates.sort(key=lambda row: row[2], reverse=True)
+            for ticker, data, _ in fallback_candidates[:fallback_limit]:
+                promising_batch[ticker] = data
+
+            if promising_batch:
+                logger.info(
+                    "No active tickers passed gatekeeper; using fallback analysis set "
+                    f"of {len(promising_batch)} tickers with valid pricing."
+                )
+
         # 3. AI Analysis
         final_analyses = self.intelligence.bulk_analyze(promising_batch, context_data=context_snapshot)
 
@@ -988,9 +1043,14 @@ class AutonomousBot:
             logger.error("GROQ_API_KEY not found in environment. Exiting.")
             return
 
+        if not self._acquire_process_lock():
+            logger.warning("Autonomous bot process lock is already held; skipping duplicate process start.")
+            return
+
         with AutonomousBot._START_GUARD_LOCK:
             if AutonomousBot._IS_RUNNING:
                 logger.warning("Autonomous bot loop already running; skipping duplicate start request.")
+                self._release_process_lock()
                 return
             AutonomousBot._IS_RUNNING = True
 
@@ -1019,6 +1079,7 @@ class AutonomousBot:
         finally:
             with AutonomousBot._START_GUARD_LOCK:
                 AutonomousBot._IS_RUNNING = False
+            self._release_process_lock()
 
 if __name__ == "__main__":
     import sys
