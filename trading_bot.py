@@ -278,7 +278,8 @@ class AutonomousBot:
 
         liquidity_score = float(tech.get("Liquidity_Score", 0.5) or 0.5)
         regime_name = regime.get("regime", "sideways")
-        regime_boost = 0.08 if regime_name == "bull" else (-0.10 if regime_name == "bear" else 0.0)
+        # AGRESIVO: bonifica operar en bear
+        regime_boost = 0.08 if regime_name == "bull" else (0.10 if regime_name == "bear" else 0.0)
 
         afp_pressure = float(afp_info.get("pressure_score", 0.0) or 0.0)
         he_impact = float(he_info.get("impact_score", 0.0) or 0.0)
