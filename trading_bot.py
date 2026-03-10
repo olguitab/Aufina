@@ -862,9 +862,11 @@ class AutonomousBot:
         # 4. Execution
         buy_candidates = []
         signal_counts = {"BUY": 0, "SELL": 0, "HOLD": 0}
+        confidence_values = []
         for ticker, analysis in final_analyses.items():
             price = ticker_data.get(ticker, {}).get("current_price", 0)
             confidence = float(getattr(analysis, "ml_confidence", getattr(analysis, "confidence", 0.5)) or 0.5)
+            confidence_values.append(confidence)
             signal = getattr(analysis, "signal", "HOLD")
             signal_counts[signal] = signal_counts.get(signal, 0) + 1
 
@@ -918,6 +920,13 @@ class AutonomousBot:
             f"SELL={signal_counts.get('SELL', 0)} | "
             f"HOLD={signal_counts.get('HOLD', 0)}"
         )
+        if confidence_values:
+            logger.info(
+                "Model confidence snapshot: "
+                f"min={min(confidence_values):.2%} | "
+                f"avg={(sum(confidence_values) / len(confidence_values)):.2%} | "
+                f"max={max(confidence_values):.2%}"
+            )
         logger.info(
             "Regime detector: "
             f"regime={market_regime.get('regime')} | "
