@@ -70,7 +70,7 @@ if not st.session_state.bot_thread_started:
     st.session_state.bot_thread_started = True
 
 st_autorefresh(interval=20 * 1000, key="aureus_refresh")
-st.session_state.paper_portfolio = PaperPortfolio()
+# No reinicializar el portafolio en cada recarga, solo si no existe en session_state
 
 paper = st.session_state.paper_portfolio
 paper_trades = PaperTradingDB.load_trade_log()
