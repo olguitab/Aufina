@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import time
 import importlib
 
 import pandas as pd
@@ -32,6 +33,8 @@ st.set_page_config(page_title="Aureus Wealth", page_icon="💼", layout="wide")
 
 _BOT_THREAD_LOCK = threading.Lock()
 _BOT_THREAD = None
+_CYCLE_THREAD = None
+_LAST_CYCLE_LAUNCHED_AT = 0.0
 
 
 def _is_hosted_runtime() -> bool:
@@ -63,6 +66,10 @@ def run_bot_in_background():
     AutonomousBot().start()
 
 
+def run_bot_single_cycle() -> None:
+    AutonomousBot().start(once=True)
+
+
 def _ensure_single_bot_thread() -> None:
     global _BOT_THREAD
     with _BOT_THREAD_LOCK:
@@ -70,6 +77,20 @@ def _ensure_single_bot_thread() -> None:
             return
         _BOT_THREAD = threading.Thread(target=run_bot_in_background, daemon=True)
         _BOT_THREAD.start()
+
+
+def _maybe_schedule_single_cycle(interval_seconds: int) -> None:
+    """Streamlit-safe scheduler: launches at most one non-overlapping cycle per interval."""
+    global _CYCLE_THREAD, _LAST_CYCLE_LAUNCHED_AT
+    now = time.time()
+    with _BOT_THREAD_LOCK:
+        if _CYCLE_THREAD is not None and _CYCLE_THREAD.is_alive():
+            return
+        if (now - _LAST_CYCLE_LAUNCHED_AT) < max(15, int(interval_seconds)):
+            return
+        _LAST_CYCLE_LAUNCHED_AT = now
+        _CYCLE_THREAD = threading.Thread(target=run_bot_single_cycle, daemon=True)
+        _CYCLE_THREAD.start()
 
 
 
@@ -82,9 +103,18 @@ auto_start_bot = str(os.environ.get("APP_AUTO_START_BOT", str(auto_start_bot_def
     "on",
 }
 
+streamlit_single_cycle_default = True if _is_hosted_runtime() else False
+streamlit_single_cycle_mode = str(
+    os.environ.get("APP_STREAMLIT_SINGLE_CYCLE_MODE", str(streamlit_single_cycle_default))
+).strip().lower() in {"1", "true", "yes", "on"}
+
+bot_interval_seconds = int(os.environ.get("TRADING_INTERVAL_SECONDS", "120"))
+
 if auto_start_bot and not st.session_state.bot_thread_started:
     _ensure_single_bot_thread()
     st.session_state.bot_thread_started = True
+elif streamlit_single_cycle_mode:
+    _maybe_schedule_single_cycle(bot_interval_seconds)
 
 st_autorefresh(interval=20 * 1000, key="aureus_refresh")
 # No reinicializar el portafolio en cada recarga, solo si no existe en session_state
