@@ -2,6 +2,7 @@ import os
 import time
 import json
 import logging
+import threading
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -99,6 +100,9 @@ def send_telegram(message: str, chat_id_override: str = None):
         logger.error(f"Telegram notification failed: {e}")
 
 class AutonomousBot:
+    _START_GUARD_LOCK = threading.Lock()
+    _IS_RUNNING = False
+
     def __init__(self):
         self.portfolio = PortfolioManager()
         self.paper_portfolio = PaperPortfolio()  # 10M CLP demo mode
@@ -984,27 +988,37 @@ class AutonomousBot:
             logger.error("GROQ_API_KEY not found in environment. Exiting.")
             return
 
-        logger.info("=== Autonomous Trading Bot Started ===")
-        if once:
-            self.run_cycle()
-            return
+        with AutonomousBot._START_GUARD_LOCK:
+            if AutonomousBot._IS_RUNNING:
+                logger.warning("Autonomous bot loop already running; skipping duplicate start request.")
+                return
+            AutonomousBot._IS_RUNNING = True
 
-        while True:
-            try:
-                self._check_telegram_commands()
-                if self.market_data.is_santiago_market_open():
-                    self.run_cycle()
-                else:
-                    wait_seconds = self.market_data.seconds_until_next_santiago_open()
-                    logger.info(
-                        "Market closed (Bolsa de Santiago). "
-                        f"Skipping market queries. Next open in ~{max(wait_seconds // 60, 1)} min."
-                    )
-            except Exception as e:
-                logger.error(f"Unexpected error in main loop: {e}")
-            
-            logger.info(f"Sleeping for {INTERVAL_SECONDS} seconds...")
-            time.sleep(INTERVAL_SECONDS)
+        logger.info("=== Autonomous Trading Bot Started ===")
+        try:
+            if once:
+                self.run_cycle()
+                return
+
+            while True:
+                try:
+                    self._check_telegram_commands()
+                    if self.market_data.is_santiago_market_open():
+                        self.run_cycle()
+                    else:
+                        wait_seconds = self.market_data.seconds_until_next_santiago_open()
+                        logger.info(
+                            "Market closed (Bolsa de Santiago). "
+                            f"Skipping market queries. Next open in ~{max(wait_seconds // 60, 1)} min."
+                        )
+                except Exception as e:
+                    logger.error(f"Unexpected error in main loop: {e}")
+
+                logger.info(f"Sleeping for {INTERVAL_SECONDS} seconds...")
+                time.sleep(INTERVAL_SECONDS)
+        finally:
+            with AutonomousBot._START_GUARD_LOCK:
+                AutonomousBot._IS_RUNNING = False
 
 if __name__ == "__main__":
     import sys

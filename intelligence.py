@@ -125,11 +125,15 @@ class IntelligenceLayer:
         self.max_bulk_prompt_chars = _env_int("MAX_BULK_PROMPT_CHARS", local_default=12000, hosted_default=8000)
         self.max_news_chars = _env_int("MAX_NEWS_CHARS", local_default=220, hosted_default=140)
         self.max_llm_tickers_per_call = _env_int("MAX_LLM_TICKERS_PER_CALL", local_default=14, hosted_default=8)
-        self.ml_only_buy_threshold = _env_float("ML_ONLY_BUY_THRESHOLD", local_default=0.53, hosted_default=0.48)
-        self.ml_only_sell_threshold = _env_float("ML_ONLY_SELL_THRESHOLD", local_default=0.33, hosted_default=0.36)
-        self._llm_cooldown_until = 0.0
         # Más agresivo: bajar el umbral de compra
         self.min_buy_probability = _env_float("MIN_BUY_PROBABILITY", local_default=0.18, hosted_default=0.15)
+        self.ml_only_buy_threshold = _env_float(
+            "ML_ONLY_BUY_THRESHOLD",
+            local_default=self.min_buy_probability,
+            hosted_default=self.min_buy_probability,
+        )
+        self.ml_only_sell_threshold = _env_float("ML_ONLY_SELL_THRESHOLD", local_default=0.33, hosted_default=0.36)
+        self._llm_cooldown_until = 0.0
         self.workflow = self._build_graph()
 
     @staticmethod

@@ -66,9 +66,10 @@ def _ensure_single_bot_thread() -> None:
 
 
 
-# Siempre intenta asegurar que el bot esté corriendo
-_ensure_single_bot_thread()
-st.session_state.bot_thread_started = True
+# Iniciar el bot solo una vez por sesión para evitar loops duplicados en cada refresh.
+if not st.session_state.bot_thread_started:
+    _ensure_single_bot_thread()
+    st.session_state.bot_thread_started = True
 
 st_autorefresh(interval=20 * 1000, key="aureus_refresh")
 # No reinicializar el portafolio en cada recarga, solo si no existe en session_state
