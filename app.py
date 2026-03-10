@@ -127,34 +127,32 @@ scenario_sim = ScenarioSimulator()
 afp_tracker = AFPTracker()
 
 initial = INITIAL_BALANCE_CLP
-market_open = market_data.is_santiago_market_open()
-
-if market_open:
-    total_value = paper.get_total_value(market_data)
-else:
-    total_value = paper.balance
-    for ticker, qty in paper.positions.items():
-        if qty > 0:
-            total_value += qty * paper.position_costs.get(ticker, 0.0)
-
 cash_value = paper.balance
 delta_value = total_value - initial
 delta_pct = (delta_value / initial) * 100 if initial else 0
 active_positions = {ticker: qty for ticker, qty in paper.positions.items() if qty > 0}
 
-portfolio_distribution = {"Cash": cash_value}
+
+# Siempre intenta usar el precio más actualizado posible para el valor total y la distribución
+total_value = paper.balance
+portfolio_distribution = {"Cash": paper.balance}
 latest_ticker_data = {}
 for ticker, qty in active_positions.items():
+    px_now = 0.0
     try:
         data = market_data.get_comprehensive_data(ticker)
         latest_ticker_data[ticker] = data
         px_now = data.get("current_price", 0.0)
-        if px_now and px_now > 0:
-            portfolio_distribution[ticker] = qty * px_now
-        else:
-            portfolio_distribution[ticker] = qty * paper.position_costs.get(ticker, 0.0)
     except Exception:
-        portfolio_distribution[ticker] = qty * paper.position_costs.get(ticker, 0.0)
+        pass
+    if px_now and px_now > 0:
+        total_value += qty * px_now
+        portfolio_distribution[ticker] = qty * px_now
+    else:
+        # Si no hay precio actual, usar el costo promedio
+        avg_cost = paper.position_costs.get(ticker, 0.0)
+        total_value += qty * avg_cost
+        portfolio_distribution[ticker] = qty * avg_cost
 
 
 ticker_prices = {
