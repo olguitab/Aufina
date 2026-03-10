@@ -252,11 +252,43 @@ if page == "Portafolio":
         else:
             st.caption("No hay posiciones abiertas")
 
-    st.subheader("Historial de trading")
-    if paper_trades:
-        st.dataframe(pd.DataFrame(paper_trades), width="stretch", hide_index=True)
+
+elif page == "Prueba Ayer":
+    st.title("Simulación de Portafolio - Día de Ayer")
+    st.info("Esta vista simula el portafolio como si recién abriera el mercado ayer. Puedes probar el flujo de compra/venta/hold en modo histórico.")
+
+    from datetime import datetime, timedelta
+    fecha_ayer = (datetime.now() - timedelta(days=1)).date()
+
+    test_total_value = paper.balance
+    test_portfolio_distribution = {"Cash": paper.balance}
+    test_latest_ticker_data = {}
+    for ticker, qty in active_positions.items():
+        px_ayer = 0.0
+        try:
+            # Intenta obtener el precio de ayer (requiere soporte en MarketData)
+            data = market_data.get_comprehensive_data(ticker, date=fecha_ayer)
+            test_latest_ticker_data[ticker] = data
+            px_ayer = data.get("current_price", 0.0)
+        except Exception:
+            pass
+        if px_ayer and px_ayer > 0:
+            test_total_value += qty * px_ayer
+            test_portfolio_distribution[ticker] = qty * px_ayer
+        else:
+            avg_cost = paper.position_costs.get(ticker, 0.0)
+            test_total_value += qty * avg_cost
+            test_portfolio_distribution[ticker] = qty * avg_cost
+
+    st.metric("Valor Total (ayer)", f"${test_total_value:,.0f}")
+    st.metric("Cash Libre (ayer)", f"${paper.balance:,.0f}")
+    st.write("Distribución de portafolio (ayer):")
+    dist_df = pd.DataFrame(list(test_portfolio_distribution.items()), columns=["Activo", "Valor"])
+    if not dist_df.empty and float(dist_df["Valor"].sum()) > 0:
+        pie = px.pie(dist_df, values="Valor", names="Activo", hole=0.5)
+        st.plotly_chart(pie, use_container_width=True)
     else:
-        st.info("No hay operaciones aún")
+        st.info("Sin datos suficientes para mostrar la distribución de ayer.")
 
 elif page == "Predicciones":
     st.subheader("Predicciones registradas")
