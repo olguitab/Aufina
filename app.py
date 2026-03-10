@@ -206,10 +206,16 @@ page = st.sidebar.radio(
 )
 
 
+
+# Asegura que market_open esté definido antes de usarlo
+if "market_open" not in locals():
+    try:
+        market_open = market_data.is_santiago_market_open()
+    except Exception:
+        market_open = False
+
 st.session_state.risk_profile = "agresivo"
 risk_profile = "agresivo"
-
-
 
 st.title("Aureus Wealth — Plataforma de Decisión")
 st.caption(
