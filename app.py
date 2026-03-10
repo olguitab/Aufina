@@ -34,51 +34,22 @@ _BOT_THREAD_LOCK = threading.Lock()
 _BOT_THREAD = None
 
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "username" not in st.session_state:
-    st.session_state.username = ""
+
 if "risk_profile" not in st.session_state:
-    st.session_state.risk_profile = "moderado"
+    st.session_state.risk_profile = "agresivo"
 if "paper_portfolio" not in st.session_state:
     st.session_state.paper_portfolio = PaperPortfolio()
 if "bot_thread_started" not in st.session_state:
     st.session_state.bot_thread_started = False
 
 
-def _load_users() -> dict:
-    raw = os.environ.get("AUREUS_APP_USERS", '{"admin": "admin123"}')
-    try:
-        users = json.loads(raw)
-        if isinstance(users, dict) and users:
-            return {str(k): str(v) for k, v in users.items()}
-    except Exception:
-        pass
-    return {"admin": "admin123"}
 
 
-def _login_view() -> None:
-    st.title("Aureus Wealth — Login")
-    st.caption("Autenticación básica multi-usuario")
-    users = _load_users()
-
-    with st.form("login_form"):
-        username = st.text_input("Usuario")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Entrar")
-
-    if submitted:
-        if users.get(username) == password:
-            st.session_state.logged_in = True
-            st.session_state.username = username
-            st.rerun()
-        else:
-            st.error("Credenciales inválidas")
 
 
-if not st.session_state.logged_in:
-    _login_view()
-    st.stop()
+
+
+
 
 
 def run_bot_in_background():
@@ -189,17 +160,11 @@ page = st.sidebar.radio(
     ],
 )
 
-risk_profile = st.sidebar.selectbox(
-    "Perfil de riesgo",
-    ["conservador", "moderado", "agresivo"],
-    index=["conservador", "moderado", "agresivo"].index(st.session_state.risk_profile),
-)
-st.session_state.risk_profile = risk_profile
 
-if st.sidebar.button("Cerrar sesión"):
-    st.session_state.logged_in = False
-    st.session_state.username = ""
-    st.rerun()
+st.session_state.risk_profile = "agresivo"
+risk_profile = "agresivo"
+
+
 
 st.title("Aureus Wealth — Plataforma de Decisión")
 st.caption(
