@@ -427,7 +427,7 @@ class IntelligenceLayer:
         explain = Predictor.explain_prediction(full_tech, context_score=context_score, top_n=3)
         driver_trace = self._format_driver_trace(explain.get("top_drivers", []))
         
-                prompt = f"""Role: Senior Institutional Quant Lead & Information Arbitrageur.
+        prompt = f"""Role: Senior Institutional Quant Lead & Information Arbitrageur.
 Context: Analyzing {ticker} in the Chilean Market (Sentinel AI Engine).
 
 INPUTS:
@@ -441,8 +441,8 @@ INPUTS:
 
 YOUR TASK:
 1. ARBITRAGE ANALYSIS: Detect if recent news or macro moves (e.g., Copper price spike) create an immediate opportunity for {ticker}.
-     - COPPER CORRELATION: If Copper > 1% and asset is CAP or Minera, BIAS STRONG BUY.
-     - CELULOSA: If CMPC/Copec news is positive, BIAS BUY.
+   - COPPER CORRELATION: If Copper > 1% and asset is CAP or Minera, BIAS STRONG BUY.
+   - CELULOSA: If CMPC/Copec news is positive, BIAS BUY.
 2. RELEVANCY FILTER: Ignore noise. Focus on: Dividends, M&A, BC Rate changes, CMF Hechos Esenciales.
 3. Determine final trading SIGNAL: BUY, SELL, or HOLD.
 
