@@ -15,7 +15,7 @@ python-dotenv
 requests
 scikit-learn
 shap
-streamlit
+streamlit>=1.25.0
 streamlit-autorefresh
 watchdog
 xgboost
