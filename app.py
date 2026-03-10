@@ -128,10 +128,7 @@ afp_tracker = AFPTracker()
 
 initial = INITIAL_BALANCE_CLP
 cash_value = paper.balance
-delta_value = total_value - initial
-delta_pct = (delta_value / initial) * 100 if initial else 0
 active_positions = {ticker: qty for ticker, qty in paper.positions.items() if qty > 0}
-
 
 # Siempre intenta usar el precio más actualizado posible para el valor total y la distribución
 total_value = paper.balance
@@ -153,6 +150,10 @@ for ticker, qty in active_positions.items():
         avg_cost = paper.position_costs.get(ticker, 0.0)
         total_value += qty * avg_cost
         portfolio_distribution[ticker] = qty * avg_cost
+
+# Ahora que total_value está definido, calcula delta_value y delta_pct
+delta_value = total_value - initial
+delta_pct = (delta_value / initial) * 100 if initial else 0
 
 
 ticker_prices = {
