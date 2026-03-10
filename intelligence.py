@@ -128,7 +128,8 @@ class IntelligenceLayer:
         self.ml_only_buy_threshold = _env_float("ML_ONLY_BUY_THRESHOLD", local_default=0.53, hosted_default=0.48)
         self.ml_only_sell_threshold = _env_float("ML_ONLY_SELL_THRESHOLD", local_default=0.33, hosted_default=0.36)
         self._llm_cooldown_until = 0.0
-        self.min_buy_probability = _env_float("MIN_BUY_PROBABILITY", local_default=0.40, hosted_default=0.34)
+        # Más agresivo: bajar el umbral de compra
+        self.min_buy_probability = _env_float("MIN_BUY_PROBABILITY", local_default=0.18, hosted_default=0.15)
         self.workflow = self._build_graph()
 
     @staticmethod
@@ -426,7 +427,7 @@ class IntelligenceLayer:
         explain = Predictor.explain_prediction(full_tech, context_score=context_score, top_n=3)
         driver_trace = self._format_driver_trace(explain.get("top_drivers", []))
         
-        prompt = f"""Role: Senior Institutional Quant Lead & Information Arbitrageur.
+                prompt = f"""Role: Senior Institutional Quant Lead & Information Arbitrageur.
 Context: Analyzing {ticker} in the Chilean Market (Sentinel AI Engine).
 
 INPUTS:
@@ -440,28 +441,30 @@ INPUTS:
 
 YOUR TASK:
 1. ARBITRAGE ANALYSIS: Detect if recent news or macro moves (e.g., Copper price spike) create an immediate opportunity for {ticker}.
-   - COPPER CORRELATION: If Copper > 1% and asset is CAP or Minera, BIAS STRONG BUY.
-   - CELULOSA: If CMPC/Copec news is positive, BIAS BUY.
+     - COPPER CORRELATION: If Copper > 1% and asset is CAP or Minera, BIAS STRONG BUY.
+     - CELULOSA: If CMPC/Copec news is positive, BIAS BUY.
 2. RELEVANCY FILTER: Ignore noise. Focus on: Dividends, M&A, BC Rate changes, CMF Hechos Esenciales.
 3. Determine final trading SIGNAL: BUY, SELL, or HOLD.
 
-SENTINEL AI - AGGRESSIVE ARBITRAGE BIAS:
-- DEFAULT ACTION: BUY. We seek to capture Alpha before the retail market reacts.
-- If ML Probability > 30%, consider it a strong signal.
-- ONLY HOLD/SELL if there is definitive evidence of a trend reversal or liquidity collapse.
+SENTINEL AI - HYPER-AGGRESSIVE PROFIT MAXIMIZATION:
+- DEFAULT ACTION: BUY. Prioritize maximizing profit, even if it means taking higher risk, as long as the decision is not reckless.
+- If ML Probability > 18%, consider it a valid signal to BUY.
+- HOLD/SELL only if there is clear, strong evidence of a trend reversal, liquidity collapse, or extreme risk.
+- Prefer BUY over HOLD. HOLD is only for cases where both upside and downside are highly uncertain.
+- Always explain the risk/reward tradeoff in the reasoning.
 
 REQUIRED JSON SCHEMA:
 {{
-  "ml_confidence": {ml_prob},
-  "quant_score": int (0-10),
-  "trend": "Bullish" | "Bearish" | "Sideways",
-  "quant_reasoning": "summary",
-  "sentiment": float (-1.0 to 1.0),
-  "sentiment_confidence": float (0-1.0),
-  "sentiment_reasoning": "summary",
-  "signal": "BUY" | "HOLD" | "SELL",
-  "strategy_used": "Information Arbitrage",
-  "reasoning": "ARBITRAGE DECISION"
+    "ml_confidence": {ml_prob},
+    "quant_score": int (0-10),
+    "trend": "Bullish" | "Bearish" | "Sideways",
+    "quant_reasoning": "summary",
+    "sentiment": float (-1.0 to 1.0),
+    "sentiment_confidence": float (0-1.0),
+    "sentiment_reasoning": "summary",
+    "signal": "BUY" | "HOLD" | "SELL",
+    "strategy_used": "Aggressive Profit Maximization",
+    "reasoning": "Decision focused on maximizing profit with controlled risk."
 }}
 JSON:"""
         

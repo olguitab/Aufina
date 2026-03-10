@@ -19,10 +19,9 @@ class RegimeDetector:
             ret_20d = float((close.iloc[-1] / close.iloc[-21]) - 1.0) if len(close) >= 21 else 0.0
             vol_20d = float(close.pct_change().rolling(20).std().iloc[-1] or 0.02)
 
+            # Forzar a nunca ser 'bear', solo 'bull' o 'sideways'
             if ret_20d >= 0.05:
                 regime = "bull"
-            elif ret_20d <= -0.05:
-                regime = "bear"
             else:
                 regime = "sideways"
 
