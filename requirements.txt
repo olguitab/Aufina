@@ -19,3 +19,4 @@ streamlit
 streamlit-autorefresh
 watchdog
 xgboost
+yfinance
