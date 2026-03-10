@@ -783,6 +783,15 @@ class AutonomousBot:
                 t = fut_to_ticker[fut]
                 ticker_data[t] = fut.result()
 
+        total_tickers = len(ticker_data)
+        priced_tickers = sum(1 for d in ticker_data.values() if float(d.get("current_price", 0.0) or 0.0) > 0)
+        active_tickers = sum(1 for d in ticker_data.values() if bool(d.get("is_active", False)))
+        errored_tickers = sum(1 for d in ticker_data.values() if d.get("error"))
+        logger.info(
+            "Market data snapshot: "
+            f"total={total_tickers} | priced={priced_tickers} | active={active_tickers} | errors={errored_tickers}"
+        )
+
         # 1.5 Run Protections
         self._check_circuit_breakers(ticker_data)
         self._update_trailing_stops(ticker_data)
@@ -816,9 +825,39 @@ class AutonomousBot:
                     "No active tickers passed gatekeeper; using fallback analysis set "
                     f"of {len(promising_batch)} tickers with valid pricing."
                 )
+            else:
+                error_examples = []
+                for ticker, data in ticker_data.items():
+                    msg = str(data.get("error", "")).strip()
+                    if msg:
+                        error_examples.append(f"{ticker}:{msg[:80]}")
+                    if len(error_examples) >= 4:
+                        break
+                logger.warning(
+                    "Promising batch remains empty after fallback; no valid prices available. "
+                    f"Sample errors={error_examples if error_examples else 'none'}"
+                )
 
         # 3. AI Analysis
         final_analyses = self.intelligence.bulk_analyze(promising_batch, context_data=context_snapshot)
+
+        if not final_analyses and promising_batch:
+            context_score = float(getattr(context_snapshot, "global_score", 0.0) or 0.0)
+            repaired = {}
+            for ticker, data in promising_batch.items():
+                tech = data.get("technical_data", {}) or {}
+                ml_outputs = Predictor.predict_multi_objective(tech, context_score=context_score)
+                fallback_item = {
+                    "ticker": ticker,
+                    "ml_prob": float(ml_outputs.get("probability", 0.5) or 0.5),
+                    "ml_expected_return_3d": float(ml_outputs.get("expected_return_3d", 0.0) or 0.0),
+                }
+                repaired[ticker] = self.intelligence._build_ml_fallback_analysis(fallback_item, context_score)
+            final_analyses = repaired
+            logger.warning(
+                "bulk_analyze returned empty results; applied deterministic ML fallback "
+                f"for {len(final_analyses)} tickers."
+            )
 
         # 4. Execution
         buy_candidates = []

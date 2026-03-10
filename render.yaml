@@ -7,14 +7,41 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
+      - key: APP_AUTO_START_BOT
+        value: "0"
+      - key: TRADING_INCLUDE_GLOBAL
+        value: "false"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+
+  - type: worker
+    name: aufina-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: "python trading_bot.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
       - key: TRADING_INTERVAL_SECONDS
-        value: "120"
+        value: "180"
       - key: TRADING_MAX_TICKERS
-        value: "24"
+        value: "12"
       - key: MARKET_DATA_MAX_WORKERS
-        value: "4"
-      - key: LLM_BATCH_SIZE
+        value: "2"
+      - key: MAX_LLM_TICKERS_PER_CALL
         value: "6"
+      - key: LLM_BATCH_SIZE
+        value: "4"
+      - key: CONTEXT_CACHE_TTL_SECONDS
+        value: "1200"
       - key: TRADING_INCLUDE_GLOBAL
         value: "false"
       - key: GROQ_API_KEY

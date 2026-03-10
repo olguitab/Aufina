@@ -34,6 +34,13 @@ _BOT_THREAD_LOCK = threading.Lock()
 _BOT_THREAD = None
 
 
+def _is_hosted_runtime() -> bool:
+    return any(
+        os.environ.get(flag)
+        for flag in ("RENDER", "RENDER_SERVICE_ID", "RAILWAY_ENVIRONMENT", "K_SERVICE")
+    )
+
+
 
 if "risk_profile" not in st.session_state:
     st.session_state.risk_profile = "agresivo"
@@ -67,7 +74,15 @@ def _ensure_single_bot_thread() -> None:
 
 
 # Iniciar el bot solo una vez por sesión para evitar loops duplicados en cada refresh.
-if not st.session_state.bot_thread_started:
+auto_start_bot_default = False if _is_hosted_runtime() else True
+auto_start_bot = str(os.environ.get("APP_AUTO_START_BOT", str(auto_start_bot_default))).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+if auto_start_bot and not st.session_state.bot_thread_started:
     _ensure_single_bot_thread()
     st.session_state.bot_thread_started = True
 

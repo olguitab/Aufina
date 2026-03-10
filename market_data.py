@@ -225,9 +225,64 @@ class MarketData:
                 "news_text": news_text
             }
         except Exception as e:
+            fallback_price = 0.0
+            try:
+                stock = yf.Ticker(ticker)
+                fast_info = getattr(stock, "fast_info", None) or {}
+                if hasattr(fast_info, "get"):
+                    fallback_price = float(fast_info.get("lastPrice") or fast_info.get("regularMarketPrice") or 0.0)
+                if fallback_price <= 0:
+                    info = getattr(stock, "info", {}) or {}
+                    fallback_price = float(info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose") or 0.0)
+            except Exception:
+                fallback_price = 0.0
+
+            if fallback_price > 0:
+                macro_returns = MarketData._get_macro_returns()
+                return {
+                    "is_active": True,
+                    "current_price": fallback_price,
+                    "technical_data": {
+                        "CurrentPrice": fallback_price,
+                        "MA20": fallback_price,
+                        "MA50": fallback_price,
+                        "MA200": fallback_price,
+                        "RSI_14": 50.0,
+                        "ATR": 0.0,
+                        "ATR_Ratio": 0.01,
+                        "ADV_20d": 0.0,
+                        "Realtime_Copper_Corr_20d": 0.0,
+                        "Liquidity_Score": 0.5,
+                        "Est_Impact_1pct_ADV_Pct": 0.0,
+                        "Copper_Return": macro_returns["Macro_Copper_Ret"],
+                        "MonthlyReturn_Pct": 0.0,
+                        "DailyReturn_Pct": 0.0,
+                        "FiveDayReturn_Pct": 0.0,
+                        "TenDayReturn_Pct": 0.0,
+                        "Dist_MA20_Pct": 0.0,
+                        "Dist_MA50_Pct": 0.0,
+                        "Dist_MA200_Pct": 0.0,
+                        "Volatility_20d": 0.02,
+                        "Volatility_5d": 0.02,
+                        "Recent_Returns_30d": [],
+                        "MACD": 0.0,
+                        "MACD_Signal": 0.0,
+                        "MACD_Hist": 0.0,
+                        "BB_Width": 0.0,
+                        "BB_Position": 0.5,
+                        "OBV": 0.0,
+                        "OBV_MA20": 0.0,
+                        "Volume_Ratio": 1.0,
+                        **macro_returns,
+                        "Trend": "Sideways",
+                    },
+                    "news_text": "No news found.",
+                    "warning": "Using quote-price fallback (history unavailable)",
+                }
+
             MarketData._invalid_ticker_until[ticker] = time_module.time() + max(300, MarketData.INVALID_TICKER_COOLDOWN_SECONDS)
             print(f"Error in comprehensive data for {ticker}: {e}")
-            return {"is_active": True, "error": str(e)}
+            return {"is_active": False, "current_price": 0, "error": str(e)}
 
     @staticmethod
     def normalize_ticker(ticker: str) -> str:
