@@ -268,11 +268,12 @@ elif page == "Prueba Ayer":
     if 'demo_ayer_resultado' not in st.session_state:
         st.session_state.demo_ayer_resultado = None
 
+
     if not st.session_state.demo_ayer_activado:
         if st.button("ACTIVAR TRADING AUTOMÁTICO DE AYER"):
             st.session_state.demo_ayer_activado = True
-            st.experimental_rerun()
-        st.stop()
+        else:
+            st.stop()
 
     # --- Simulación de trading automático demo ---
     from trading_bot import AutonomousBot
