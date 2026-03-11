@@ -167,6 +167,12 @@ class PaperPortfolio:
         self.trade_log = PaperTradingDB.load_trade_log()
         self.initial_balance = INITIAL_BALANCE_CLP
 
+    def sync_from_db(self):
+        """Reload all state from DB. Call at the start of each bot cycle to pick up UI resets."""
+        self.balance = PaperTradingDB.load_state()
+        self.positions = PaperTradingDB.load_positions()
+        self.position_costs = PaperTradingDB.load_position_costs()
+
     def calculate_position_size(self, price: float, confidence: float = 0.5, aggressive: bool = False) -> int:
         """
         Sizing for demo paper portfolio.

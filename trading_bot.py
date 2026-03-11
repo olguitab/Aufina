@@ -803,6 +803,7 @@ class AutonomousBot:
 
     def run_cycle(self):
         logger.info("Starting market scan cycle (Sentinel AI Engine)...")
+        self.paper_portfolio.sync_from_db()
         self._check_telegram_commands()
         market_regime = self.regime_detector.detect()
         
