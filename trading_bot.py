@@ -545,17 +545,21 @@ class AutonomousBot:
                             price = float(parts[3])
                             ok, detail = self.portfolio.manual_entry(ticker, qty, price)
                             if ok:
-                                send_telegram(
-                                    f"✅ Compra confirmada: {qty}x {ticker} a ${price:,.0f}.\n"
-                                    f"💼 Capital libre actualizado: ${self.portfolio.balance:,.0f} CLP.",
-                                    str(chat_id)
-                                )
+                                # send_telegram(
+                                #     f"✅ Compra confirmada: {qty}x {ticker} a ${price:,.0f}.\n"
+                                #     f"💼 Capital libre actualizado: ${self.portfolio.balance:,.0f} CLP.",
+                                #     str(chat_id)
+                                # )  # Bloqueado envío a Telegram
+                                pass
                             else:
-                                send_telegram(f"❌ No se pudo registrar la compra: {detail}", str(chat_id))
+                                # send_telegram(f"❌ No se pudo registrar la compra: {detail}", str(chat_id))  # Bloqueado envío a Telegram
+                                pass
                         except ValueError:
-                            send_telegram("❌ Error: Cantidad o precio inválido.", str(chat_id))
+                            # send_telegram("❌ Error: Cantidad o precio inválido.", str(chat_id))  # Bloqueado envío a Telegram
+                            pass
                     else:
-                        send_telegram("❌ Formato: `/comprar [TICKER] [CANTIDAD] [PRECIO]`", str(chat_id))
+                        # send_telegram("❌ Formato: `/comprar [TICKER] [CANTIDAD] [PRECIO]`", str(chat_id))  # Bloqueado envío a Telegram
+                        pass
                         
                 elif cmd == "/vender":
                     if len(parts) >= 4:
@@ -567,17 +571,21 @@ class AutonomousBot:
                             if ok:
                                 if self.portfolio.positions.get(ticker, 0) <= 0 and f"REAL_{ticker}" in self._price_peaks:
                                     del self._price_peaks[f"REAL_{ticker}"]
-                                send_telegram(
-                                    f"✅ Venta confirmada: {qty}x {ticker} a ${price:,.0f}.\n"
-                                    f"💼 Capital libre actualizado: ${self.portfolio.balance:,.0f} CLP.",
-                                    str(chat_id)
-                                )
+                                # send_telegram(
+                                #     f"✅ Venta confirmada: {qty}x {ticker} a ${price:,.0f}.\n"
+                                #     f"💼 Capital libre actualizado: ${self.portfolio.balance:,.0f} CLP.",
+                                #     str(chat_id)
+                                # )  # Bloqueado envío a Telegram
+                                pass
                             else:
-                                send_telegram(f"❌ No se pudo registrar la venta: {detail}", str(chat_id))
+                                # send_telegram(f"❌ No se pudo registrar la venta: {detail}", str(chat_id))  # Bloqueado envío a Telegram
+                                pass
                         except ValueError:
-                            send_telegram("❌ Error: Cantidad o precio inválido.", str(chat_id))
+                            # send_telegram("❌ Error: Cantidad o precio inválido.", str(chat_id))  # Bloqueado envío a Telegram
+                            pass
                     else:
-                        send_telegram("❌ Formato: `/vender [TICKER] [CANTIDAD] [PRECIO]`", str(chat_id))
+                        # send_telegram("❌ Formato: `/vender [TICKER] [CANTIDAD] [PRECIO]`", str(chat_id))  # Bloqueado envío a Telegram
+                        pass
                         
                 elif cmd == "/estado":
                     msg_txt = f"📊 *Estado Portafolio Real*\nCapital Libre: ${self.portfolio.balance:,.0f} CLP\n"
@@ -590,7 +598,8 @@ class AutonomousBot:
                             msg_txt += f"• {tk}: {q} acciones\n"
                     else:
                         msg_txt += "\n_Sin posiciones activas._"
-                    send_telegram(msg_txt, str(chat_id))
+                    # send_telegram(msg_txt, str(chat_id))  # Bloqueado envío a Telegram
+                    pass
         
         except Exception as e:
             logger.error(f"Error checking Telegram commands: {e}")
