@@ -331,9 +331,9 @@ elif page == "Prueba Ayer":
                     st.session_state.demo_ayer_trades.append({"hora": hora_sim.strftime('%H:%M'), "ticker": ticker, "accion": "BUY", "precio": price})
             except Exception:
                 continue
-        # Avanza la hora simulada 1 minuto real = 1 minuto simulado
+        # Avanza la hora simulada 1 minuto simulado = 10 segundos reales
         st.session_state.demo_ayer_datetime = hora_sim + timedelta(minutes=1)
-        st_autorefresh(interval=60 * 1000, key="aureus_demo_ayer")
+        st_autorefresh(interval=10 * 1000, key="aureus_demo_ayer")
     else:
         st.success("¡Fin de la simulación de ayer!")
 
