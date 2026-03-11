@@ -282,6 +282,75 @@ if page == "Portafolio":
         else:
             st.caption("No hay posiciones abiertas")
 
+    # --- Historial de Operaciones ---
+    st.subheader("📊 Historial de Operaciones")
+    if paper_trades:
+        # Mostrar últimas 20 operaciones en orden descendente (más recientes primero)
+        trades_df = pd.DataFrame(paper_trades[:20])
+        
+        # Asegurarse de que el columnas existan
+        display_cols = []
+        if "timestamp" in trades_df.columns:
+            display_cols.append("timestamp")
+        elif "Hora" in trades_df.columns:
+            display_cols.append("Hora")
+        elif "hora" in trades_df.columns:
+            display_cols.append("hora")
+            
+        if "ticker" in trades_df.columns:
+            display_cols.append("ticker")
+        elif "Activo" in trades_df.columns:
+            display_cols.append("Activo")
+            
+        if "signal" in trades_df.columns:
+            display_cols.append("signal")
+        elif "Acción" in trades_df.columns:
+            display_cols.append("Acción")
+            
+        if "price" in trades_df.columns:
+            display_cols.append("price")
+        elif "Precio" in trades_df.columns:
+            display_cols.append("Precio")
+            
+        if "quantity" in trades_df.columns:
+            display_cols.append("quantity")
+        elif "Cantidad" in trades_df.columns:
+            display_cols.append("Cantidad")
+            
+        if "reasoning" in trades_df.columns:
+            display_cols.append("reasoning")
+        elif "Razón" in trades_df.columns:
+            display_cols.append("Razón")
+        
+        # Filtrar solo columnas que existen
+        display_cols = [col for col in display_cols if col in trades_df.columns]
+        
+        if display_cols:
+            trades_display = trades_df[display_cols].copy()
+            # Renombrar columnas para mejor visualización
+            rename_map = {
+                "timestamp": "⏰ Hora",
+                "Hora": "⏰ Hora",
+                "hora": "⏰ Hora",
+                "ticker": "📌 Activo",
+                "Activo": "📌 Activo",
+                "signal": "✅ Acción",
+                "Acción": "✅ Acción",
+                "price": "💰 Precio",
+                "Precio": "💰 Precio",
+                "quantity": "📊 Cantidad",
+                "Cantidad": "📊 Cantidad",
+                "reasoning": "📝 Razón",
+                "Razón": "📝 Razón",
+                "confidence": "🎯 Confianza"
+            }
+            trades_display = trades_display.rename(columns=rename_map)
+            st.dataframe(trades_display, hide_index=True, use_container_width=True)
+        else:
+            st.info("No hay datos de operaciones disponibles")
+    else:
+        st.caption("Sin operaciones registradas todavía")
+
 
 elif page == "Prueba Ayer":
     st.title("Simulación de Portafolio - Día de Ayer (Trading Automático)")
