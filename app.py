@@ -255,82 +255,63 @@ if page == "Portafolio":
 
 
 elif page == "Prueba Ayer":
-    st.title("Simulación de Portafolio - Día de Ayer")
-    st.info("Esta vista simula el portafolio como si recién abriera el mercado ayer. Puedes probar el flujo de compra/venta/hold en modo histórico.")
+    st.title("Simulación de Portafolio - Día de Ayer (Trading Automático)")
+    st.info("Esta vista simula el portafolio como si recién abriera el mercado ayer a las 9:30am. Pulsa ACTIVAR para iniciar el trading automático demo con 10 millones.")
 
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, time as dtime
     fecha_ayer = (datetime.now() - timedelta(days=1)).date()
+    hora_apertura = dtime(hour=9, minute=30)
+    dt_inicio = datetime.combine(fecha_ayer, hora_apertura)
 
-    # Estado simulado de portafolio para demo
-    demo_balance = paper.balance
-    demo_positions = paper.positions.copy()
-    demo_position_costs = paper.position_costs.copy()
-    demo_trades = []
+    if 'demo_ayer_activado' not in st.session_state:
+        st.session_state.demo_ayer_activado = False
+    if 'demo_ayer_resultado' not in st.session_state:
+        st.session_state.demo_ayer_resultado = None
 
-    # Mostrar métricas y distribución con precios de ayer
-    demo_total_value = demo_balance
-    demo_portfolio_distribution = {"Cash": demo_balance}
-    demo_latest_ticker_data = {}
-    for ticker, qty in demo_positions.items():
-        if qty > 0:
-            px_ayer = 0.0
-            try:
-                data = market_data.get_comprehensive_data(ticker, date=fecha_ayer)
-                demo_latest_ticker_data[ticker] = data
-                px_ayer = data.get("current_price", 0.0)
-            except Exception:
-                pass
-            if px_ayer and px_ayer > 0:
-                demo_total_value += qty * px_ayer
-                demo_portfolio_distribution[ticker] = qty * px_ayer
-            else:
-                avg_cost = demo_position_costs.get(ticker, 0.0)
-                demo_total_value += qty * avg_cost
-                demo_portfolio_distribution[ticker] = qty * avg_cost
+    if not st.session_state.demo_ayer_activado:
+        if st.button("ACTIVAR TRADING AUTOMÁTICO DE AYER"):
+            st.session_state.demo_ayer_activado = True
+            st.experimental_rerun()
+        st.stop()
 
-    st.metric("Valor Total (ayer)", f"${demo_total_value:,.0f}")
-    st.metric("Cash Libre (ayer)", f"${demo_balance:,.0f}")
-    st.write("Distribución de portafolio (ayer):")
-    dist_df = pd.DataFrame(list(demo_portfolio_distribution.items()), columns=["Activo", "Valor"])
-    if not dist_df.empty and float(dist_df["Valor"].sum()) > 0:
-        pie = px.pie(dist_df, values="Valor", names="Activo", hole=0.5)
-        st.plotly_chart(pie, use_container_width=True)
+    # --- Simulación de trading automático demo ---
+    from trading_bot import AutonomousBot
+    demo_bot = AutonomousBot()
+    demo_bot.paper_portfolio = PaperPortfolio()  # Reinicia demo a 10M
+    demo_bot.paper_portfolio.balance = 10_000_000.0
+    demo_bot.paper_portfolio.positions = {}
+    demo_bot.paper_portfolio.position_costs = {}
+
+    # Ejecutar un ciclo de trading como si fuera ayer a las 9:30am
+    # (puedes expandir esto a múltiples ciclos si quieres backtest más largo)
+    # Forzamos precios históricos de ayer en MarketData
+    resultados = []
+    for ticker in demo_bot.paper_portfolio.positions.keys():
+        # Limpiar posiciones para demo puro
+        demo_bot.paper_portfolio.positions[ticker] = 0
+    # Simula un ciclo de trading demo con precios de ayer
+    for ticker in get_trading_watchlist():
+        try:
+            data = demo_bot.market_data.get_comprehensive_data(ticker, date=fecha_ayer)
+            price = data.get("current_price", 0.0)
+            if price > 0:
+                # Simula decisión de compra demo (puedes mejorar lógica)
+                demo_bot._execute_paper_signal(ticker, "BUY", price, "Demo auto ayer", confidence=0.5)
+                resultados.append({"ticker": ticker, "accion": "BUY", "precio": price})
+        except Exception:
+            continue
+
+    st.session_state.demo_ayer_resultado = demo_bot.paper_portfolio
+
+    st.success("¡Trading automático demo de ayer ejecutado!")
+    st.metric("Valor Total (fin de ayer)", f"${demo_bot.paper_portfolio.get_total_value(demo_bot.market_data):,.0f}")
+    st.metric("Cash Libre (fin de ayer)", f"${demo_bot.paper_portfolio.balance:,.0f}")
+    st.write("Distribución de portafolio (fin de ayer):")
+    dist_df = pd.DataFrame(list(demo_bot.paper_portfolio.positions.items()), columns=["Activo", "Cantidad"])
+    if not dist_df.empty and float(dist_df["Cantidad"].sum()) > 0:
+        st.dataframe(dist_df, hide_index=True)
     else:
-        st.info("Sin datos suficientes para mostrar la distribución de ayer.")
-
-    st.subheader("Simular operación histórica (ayer)")
-    tickers = list(demo_positions.keys())
-    if tickers:
-        selected_ticker = st.selectbox("Selecciona ticker para operar", tickers)
-        accion = st.radio("Acción", ["Comprar", "Vender", "Mantener (Hold)"])
-        cantidad = st.number_input("Cantidad", min_value=1, max_value=int(demo_positions[selected_ticker]) if accion != "Comprar" else 1000, value=1)
-        if st.button("Ejecutar operación demo"):
-            precio_ayer = demo_latest_ticker_data.get(selected_ticker, {}).get("current_price", 0.0)
-            if accion == "Comprar":
-                costo = cantidad * precio_ayer
-                if costo <= demo_balance:
-                    demo_balance -= costo
-                    demo_positions[selected_ticker] = demo_positions.get(selected_ticker, 0) + cantidad
-                    demo_trades.append({"ticker": selected_ticker, "accion": "Compra", "cantidad": cantidad, "precio": precio_ayer})
-                    st.success(f"Compra simulada de {cantidad} {selected_ticker} a ${precio_ayer:,.2f}")
-                else:
-                    st.error("No hay suficiente cash para comprar.")
-            elif accion == "Vender":
-                if cantidad <= demo_positions.get(selected_ticker, 0):
-                    demo_balance += cantidad * precio_ayer
-                    demo_positions[selected_ticker] -= cantidad
-                    demo_trades.append({"ticker": selected_ticker, "accion": "Venta", "cantidad": cantidad, "precio": precio_ayer})
-                    st.success(f"Venta simulada de {cantidad} {selected_ticker} a ${precio_ayer:,.2f}")
-                else:
-                    st.error("No tienes suficientes acciones para vender.")
-            else:
-                st.info("Mantienes la posición (Hold)")
-    else:
-        st.info("No hay posiciones para operar en demo.")
-
-    if demo_trades:
-        st.subheader("Historial de operaciones demo (ayer)")
-        st.dataframe(pd.DataFrame(demo_trades), hide_index=True)
+        st.info("Sin posiciones abiertas al cierre de la demo.")
 
 elif page == "Predicciones":
     st.subheader("Predicciones registradas")
