@@ -381,10 +381,10 @@ if page == "Portafolio":
             st.warning("⚠️ Esto borrará todas las posiciones e historial de operaciones.")
             reset_amount = st.number_input(
                 "¿Con cuánto capital quieres empezar? (CLP)",
-                min_value=100_000,
+                min_value=1,
                 max_value=1_000_000_000,
                 value=int(INITIAL_BALANCE_CLP),
-                step=500_000,
+                step=1_000,
                 format="%d",
             )
             col_ok, col_cancel = st.columns(2)
