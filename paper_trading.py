@@ -143,14 +143,15 @@ class PaperTradingDB:
         ]
 
     @staticmethod
-    def reset():
-        """Reset paper trading to initial state (10M CLP fresh start)."""
+    def reset(new_balance: float = None):
+        """Reset paper trading to a fresh state with the given balance (defaults to INITIAL_BALANCE_CLP)."""
+        balance = new_balance if new_balance is not None else INITIAL_BALANCE_CLP
         ensure_project_dirs()
         conn = sqlite3.connect(PAPER_DB_PATH)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM paper_trades")
         cursor.execute("DELETE FROM paper_positions")
-        cursor.execute("INSERT OR REPLACE INTO paper_state (key, value) VALUES ('balance', ?)", (str(INITIAL_BALANCE_CLP),))
+        cursor.execute("INSERT OR REPLACE INTO paper_state (key, value) VALUES ('balance', ?)", (str(balance),))
         conn.commit()
         conn.close()
 

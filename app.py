@@ -74,6 +74,8 @@ if "paper_portfolio" not in st.session_state:
     st.session_state.paper_portfolio = PaperPortfolio()
 if "bot_thread_started" not in st.session_state:
     st.session_state.bot_thread_started = False
+if "show_reset_dialog" not in st.session_state:
+    st.session_state.show_reset_dialog = False
 
 
 
@@ -368,6 +370,35 @@ if page == "Portafolio":
             st.info("No hay datos de operaciones disponibles")
     else:
         st.caption("Sin operaciones registradas todavía")
+
+    # --- Reiniciar Demo ---
+    st.markdown("---")
+    if st.button("🔄 Reiniciar Demo", type="secondary"):
+        st.session_state.show_reset_dialog = True
+
+    if st.session_state.get("show_reset_dialog", False):
+        with st.container(border=True):
+            st.warning("⚠️ Esto borrará todas las posiciones e historial de operaciones.")
+            reset_amount = st.number_input(
+                "¿Con cuánto capital quieres empezar? (CLP)",
+                min_value=100_000,
+                max_value=1_000_000_000,
+                value=int(INITIAL_BALANCE_CLP),
+                step=500_000,
+                format="%d",
+            )
+            col_ok, col_cancel = st.columns(2)
+            with col_ok:
+                if st.button("✅ Confirmar reinicio", type="primary"):
+                    PaperTradingDB.reset(new_balance=float(reset_amount))
+                    st.session_state.paper_portfolio = PaperPortfolio()
+                    st.session_state.show_reset_dialog = False
+                    st.success(f"Demo reiniciado con ${reset_amount:,} CLP 🎉")
+                    st.rerun()
+            with col_cancel:
+                if st.button("❌ Cancelar"):
+                    st.session_state.show_reset_dialog = False
+                    st.rerun()
 
 
 elif page == "Prueba Ayer":
