@@ -42,10 +42,13 @@ def is_market_open():
     now = datetime.datetime.now(CHILE_TZ).time()
     return MARKET_OPEN <= now <= MARKET_CLOSE
 
-# --- Congelar portafolio fuera de horario de mercado ---
+
+# --- Mostrar portafolio siempre, pero congelar operaciones y precios si el mercado está cerrado ---
 if not is_market_open():
-    st.warning("⏳ El portafolio está congelado fuera del horario de la Bolsa de Santiago (09:30 a 16:00). No se pueden realizar operaciones ni actualizar valores en este momento.")
-    st.stop()
+    st.warning("⏳ Mercado cerrado: la Bolsa de Santiago opera de 09:30 a 16:00. Se muestran los valores de cierre más recientes. No se pueden realizar operaciones ni actualizar precios en este momento.")
+    market_open = False
+else:
+    market_open = True
 
 _BOT_THREAD_LOCK = threading.Lock()
 _BOT_THREAD = None
@@ -146,23 +149,33 @@ initial = INITIAL_BALANCE_CLP
 cash_value = paper.balance
 active_positions = {ticker: qty for ticker, qty in paper.positions.items() if qty > 0}
 
-# Siempre intenta usar el precio más actualizado posible para el valor total y la distribución
+
+# Si el mercado está abierto, usa precios actuales; si está cerrado, usa último precio almacenado o de cierre
 total_value = paper.balance
 portfolio_distribution = {"Cash": paper.balance}
 latest_ticker_data = {}
 for ticker, qty in active_positions.items():
     px_now = 0.0
-    try:
-        data = market_data.get_comprehensive_data(ticker)
-        latest_ticker_data[ticker] = data
-        px_now = data.get("current_price", 0.0)
-    except Exception:
-        pass
+    if market_open:
+        try:
+            data = market_data.get_comprehensive_data(ticker)
+            latest_ticker_data[ticker] = data
+            px_now = data.get("current_price", 0.0)
+        except Exception:
+            pass
+    else:
+        # Mercado cerrado: usar último precio almacenado/cierre
+        try:
+            data = market_data.get_comprehensive_data(ticker)
+            latest_ticker_data[ticker] = data
+            px_now = data.get("close_price", 0.0) or data.get("current_price", 0.0)
+        except Exception:
+            pass
     if px_now and px_now > 0:
         total_value += qty * px_now
         portfolio_distribution[ticker] = qty * px_now
     else:
-        # Si no hay precio actual, usar el costo promedio
+        # Si no hay precio, usar el costo promedio
         avg_cost = paper.position_costs.get(ticker, 0.0)
         total_value += qty * avg_cost
         portfolio_distribution[ticker] = qty * avg_cost
