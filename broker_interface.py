@@ -29,9 +29,9 @@ class PaperBrokerAdapter(BrokerInterface):
     def get_positions(self) -> Dict[str, float]:
         return dict(self.portfolio.positions)
 
-    def place_order(self, ticker: str, signal: str, price: float, reasoning: str, confidence: float = 0.5) -> Dict[str, Any]:
+    def place_order(self, ticker: str, signal: str, price: float, reasoning: str, confidence: float = 0.5, aggressive: bool = False) -> Dict[str, Any]:
         before_balance = float(self.portfolio.balance)
-        self.portfolio.execute_order(ticker=ticker, signal=signal, price=price, reasoning=reasoning, confidence=confidence)
+        self.portfolio.execute_order(ticker=ticker, signal=signal, price=price, reasoning=reasoning, confidence=confidence, aggressive=aggressive)
         return {
             "status": "ok",
             "mode": "paper",

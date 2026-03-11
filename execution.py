@@ -21,26 +21,50 @@ class PortfolioManager:
         prices = {ticker: float(avg_cost) for ticker, avg_cost in rows if avg_cost and avg_cost > 0}
         return prices
         
-    def calculate_position_size(self, price: float, confidence: float = 0.5) -> int:
-        """Calculate position size based on ML conviction (Ultra-Aggressive).
-        - High (>60%): 40% of balance (Maximize Gains)
-        - Med (45-60%): 25% of balance
-        - Low (<45%): 15% of balance
+    def calculate_position_size(self, price: float, confidence: float = 0.5, max_positions: int = 6, aggressive: bool = False) -> int:
         """
-        if confidence > 0.60:
-            risk_pct = 0.40
-        elif confidence > 0.45:
-            risk_pct = 0.25
+        Calculate position size based on ML conviction and portfolio diversification.
+        More aggressive when fewer positions open, scales down risk as portfolio grows.
+        
+        Strategy:
+        - Allocate max_capital_per_position based on # of active positions
+        - High confidence (>60%): 3.5% per position (allows ~14+ positions at high conf)
+        - Med confidence (45-60%): 2.5% per position
+        - Low confidence (<45%): 1.5% per position
+        - BONUS: If <2 active positions, boost to 5% per position for growth
+        - AGGRESSIVE MODE: Double the allocation (up to 10% per position when minimal positions)
+        """
+        # Count active positions
+        active_positions = sum(1 for qty in self.positions.values() if qty > 0)
+        
+        # Determine risk allocation per position
+        if active_positions < 2:
+            # Aggressive growth mode when few positions
+            if confidence > 0.60:
+                risk_pct = 0.10 if aggressive else 0.05  # 10% or 5% for high conviction when growing
+            elif confidence > 0.45:
+                risk_pct = 0.07 if aggressive else 0.035  # 7% or 3.5%
+            else:
+                risk_pct = 0.04 if aggressive else 0.02   # 4% or 2%
         else:
-            risk_pct = 0.15
-            
-        amount_to_risk = self.balance * risk_pct
-        size = int(amount_to_risk / price)
+            # Normal portfolio: balanced allocation
+            if confidence > 0.60:
+                risk_pct = 0.07 if aggressive else 0.035  # 7% or 3.5% per position
+            elif confidence > 0.45:
+                risk_pct = 0.05 if aggressive else 0.025  # 5% or 2.5%
+            else:
+                risk_pct = 0.03 if aggressive else 0.015  # 3% or 1.5%
+        
+        amount_to_invest = self.balance * risk_pct
+        size = int(amount_to_invest / price)
+        
+        # Ensure minimum of 1 share if enough balance
         if size == 0 and self.balance >= price:
             size = 1
+        
         return size
 
-    def execute_order(self, ticker: str, signal: str, price: float, reasoning: str, confidence: float = 0.5, amount_to_invest: float = None, adv_20d: float = 0):
+    def execute_order(self, ticker: str, signal: str, price: float, reasoning: str, confidence: float = 0.5, amount_to_invest: float = None, adv_20d: float = 0, aggressive: bool = False):
         from database import TradingDB
         print(f"\n--- EXECUTING {signal} ORDER FOR {ticker} (Confidence: {confidence:.2%}) ---")
         
@@ -56,7 +80,7 @@ class PortfolioManager:
                 cost_limit = amount_to_invest
                 size = int(cost_limit / price)
             else:
-                size = self.calculate_position_size(price, confidence=confidence)
+                size = self.calculate_position_size(price, confidence=confidence, aggressive=aggressive)
                 cost_limit = size * price
             
             # 2. Sentinel AI Liquidity Rule: Max 5% of ADV

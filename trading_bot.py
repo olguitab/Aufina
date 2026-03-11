@@ -119,11 +119,12 @@ class AutonomousBot:
         self.regime_detector = RegimeDetector()
         # Trailing Stop: tracks the highest price seen since entry for each position
         self._price_peaks: dict = {}          # {ticker: highest_price_seen}
-        self.TRAILING_STOP_PCT = 0.05         # Sell if price drops 5% from peak
-        self.TAKE_PROFIT_PCT = 0.15            # Hard take-profit at +15% (massive move)
-        self.MIN_HOLD_CYCLES = 3               # Hold at least 3 cycles before considering sell
+        self.TRAILING_STOP_PCT = 0.03         # Sell if price drops 3% from peak (more aggressive)
+        self.TAKE_PROFIT_PCT = 0.08           # Take-profit at +8% (realistic gains)
+        self.MIN_HOLD_CYCLES = 1              # Hold at least 1 cycle before considering sell (more dynamic)
         self._last_buy_alerts: dict = {}
         self.telegram_alerts_enabled = True
+        self.aggressive_mode = _env_flag("TRADING_AGGRESSIVE_MODE", default=False)  # Deploy max capital
         self.last_update_id = 0
         self.prediction_log_cooldown_seconds = int(os.environ.get("PREDICTION_LOG_COOLDOWN_SECONDS", 1800))
         self._last_prediction_logged_at: dict = {}
@@ -334,7 +335,7 @@ class AutonomousBot:
         )
         return float(score)
 
-    def _execute_paper_signal(self, ticker: str, signal: str, price: float, reasoning: str, confidence: float = 0.5):
+    def _execute_paper_signal(self, ticker: str, signal: str, price: float, reasoning: str, confidence: float = 0.5, aggressive: bool = False):
         """Executes autonomous paper-trading orders for the 10M demo portfolio."""
         if price <= 0:
             return
@@ -343,7 +344,7 @@ class AutonomousBot:
             if self.paper_portfolio.positions.get(ticker, 0) > 0:
                 return
 
-            suggested_qty = self.paper_portfolio.calculate_position_size(price, confidence=confidence)
+            suggested_qty = self.paper_portfolio.calculate_position_size(price, confidence=confidence, aggressive=aggressive)
             if suggested_qty <= 0:
                 return
 
@@ -390,6 +391,7 @@ class AutonomousBot:
                 reasoning=reasoning,
                 confidence=confidence,
                 amount_to_invest=max_invest,
+                aggressive=aggressive,
             )
             return
         elif signal == "SELL":
@@ -638,28 +640,37 @@ class AutonomousBot:
             self._price_peaks[peak_key] = new_peak
             drop_from_peak = (current_price - new_peak) / new_peak
 
-            # --- REGLA 1: Hard Take-Profit +15% (sin condiciones, asegura ganancia excepcional) ---
+            # --- REGLA 1: Hard Take-Profit (Lock in gains at +8%) ---
             if pnl_pct >= self.TAKE_PROFIT_PCT:
-                return ("SELL", current_price, f"🎯 Take Profit: +{pnl_pct:.1%} — Ganancia excepcional asegurada")
+                return ("SELL", current_price, f"🎯 Take Profit: +{pnl_pct:.1%} — Ganancia asegurada")
 
-            # --- REGLA 2: Trailing Stop + Confirmación ML ---
+            # --- REGLA 2: Aggressive Trailing Stop ---
+            # If price drops 3%+ from peak, evaluate exit
             if new_peak > avg_cost and drop_from_peak <= -self.TRAILING_STOP_PCT:
-                # Price fell from peak. Now ask the ML model: is the trend still bullish?
                 tech = ticker_data_entry.get("technical_data", {})
                 ml_prob = Predictor.predict_probability(tech)
-
-                if ml_prob >= 0.45:
-                    # ML says: still bullish probability. Likely noise/temporary dip. HOLD.
+                
+                # If we're in a loss AND trailing stop triggered, SELL (cut losses quickly)
+                if pnl_pct < 0:
+                    reason = (
+                        f"📉 Trailing Stop (LOSS): Cayó {drop_from_peak:.1%} desde pico "
+                        f"+ Pérdida acumulada {pnl_pct:.1%} → SALIR."
+                    )
+                    return ("SELL", current_price, reason)
+                
+                # If we have a gain but price is falling, check ML confidence
+                # More permissive: only hold if ML is quite bullish (>55%)
+                if ml_prob >= 0.55:
                     logger.info(
-                        f"[{portfolio_label}] {ticker}: Trailing activado pero ML={ml_prob:.1%} (≥45%) → MANTENIENDO. "
-                        f"Puede ser ruido temporal. P&L: {pnl_pct:.1%}"
+                        f"[{portfolio_label}] {ticker}: Trailing activado pero ML={ml_prob:.1%} (≥55%) → MANTENIENDO. "
+                        f"Tendencia alcista confirmada. P&L: {pnl_pct:.1%}"
                     )
                     return None
                 else:
-                    # ML confirms weakness. Real reversal detected. SELL.
+                    # ML is not strongly bullish, exit the position
                     reason = (
-                        f"📉 Trailing Stop CONFIRMADO por ML: Cayó {drop_from_peak:.1%} desde pico "
-                        f"+ ML prob={ml_prob:.1%} (debilidad confirmada). "
+                        f"📉 Trailing Stop: Cayó {drop_from_peak:.1%} desde pico "
+                        f"+ ML prob={ml_prob:.1%} (débil). "
                         f"Ganancia neta: {pnl_pct:.1%}"
                     )
                     return ("SELL", current_price, reason)
@@ -670,7 +681,7 @@ class AutonomousBot:
             )
             return None
 
-        # --- Real Portfolio ---
+        # --- Real Portfolio: Automatic Execution ---
         for ticker, qty in list(self.portfolio.positions.items()):
             current_price = ticker_data.get(ticker, {}).get("current_price", 0)
             conn = sqlite3.connect(TRADING_DB_FILE)
@@ -682,14 +693,25 @@ class AutonomousBot:
             if result:
                 signal, price, reason = result
                 logger.info(f"[REAL] {signal} {ticker}: {reason}")
-                self._send_automatic_telegram(
-                    f"📉 *ALERTA DE VENTA (REAL)* 📉\n"
-                    f"Acción: {ticker}\n"
-                    f"Cantidad estimada en cartera: {qty} acciones\n"
-                    f"Precio Actual: ${price:,.0f}\n"
-                    f"Motivo: {reason}\n\n"
-                    f"_Si ejecutas la venta, confirma con_ `/vender {ticker} {qty} {price:,.0f}`"
-                )
+                
+                # Execute order directly (BUY/SELL/HOLD)
+                if signal == "SELL":
+                    ok, msg = self.portfolio.manual_exit(ticker, quantity=qty, price=price)
+                    if ok:
+                        logger.info(f"[REAL] VENTA AUTOMÁTICA EJECUTADA: {ticker} x {qty} @ ${price:.2f}")
+                        # Clean up peak tracking
+                        peak_key = f"REAL_{ticker}"
+                        if peak_key in self._price_peaks:
+                            del self._price_peaks[peak_key]
+                    else:
+                        logger.warning(f"[REAL] VENTA FALLIDA para {ticker}: {msg}")
+                        # Send alert anyway if execution failed
+                        self._send_automatic_telegram(
+                            f"⚠️ *VENTA AUTOMÁTICA FALLIDA* ⚠️\n"
+                            f"Acción: {ticker}\n"
+                            f"Error: {msg}\n"
+                            f"Motivo de intento: {reason}"
+                        )
 
         # --- Paper Portfolio (Demo 10M): ejecución automática de ventas ---
         for ticker, qty in list(self.paper_portfolio.positions.items()):
@@ -706,6 +728,7 @@ class AutonomousBot:
                     price=price,
                     reasoning=reason,
                     confidence=0.9,
+                    aggressive=self.aggressive_mode,
                 )
                 if signal == "SELL":
                     peak_key = f"PAPER_{ticker}"
@@ -772,6 +795,7 @@ class AutonomousBot:
                     price=current_price,
                     reasoning=reason,
                     confidence=0.95,
+                    aggressive=self.aggressive_mode,
                 )
                 peak_key = f"PAPER_{ticker}"
                 if peak_key in self._price_peaks:
@@ -904,6 +928,7 @@ class AutonomousBot:
                     price=price,
                     reasoning=analysis.reasoning,
                     confidence=confidence,
+                    aggressive=self.aggressive_mode,
                 )
             elif analysis.signal == "SELL":
                 self._execute_paper_signal(
@@ -912,6 +937,7 @@ class AutonomousBot:
                     price=price,
                     reasoning=analysis.reasoning,
                     confidence=confidence,
+                    aggressive=self.aggressive_mode,
                 )
                 # Solo alerta para cuenta real (ejecución manual)
                 if ticker in self.portfolio.positions and self.portfolio.positions[ticker] > 0:

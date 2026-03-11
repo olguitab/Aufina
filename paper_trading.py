@@ -164,14 +164,27 @@ class PaperPortfolio:
         self.trade_log = PaperTradingDB.load_trade_log()
         self.initial_balance = INITIAL_BALANCE_CLP
 
-    def calculate_position_size(self, price: float, confidence: float = 0.5) -> int:
-        """Ultra-Aggressive sizing for demo purposes."""
-        if confidence > 0.60:
-            risk_pct = 0.40
-        elif confidence > 0.45:
-            risk_pct = 0.25
+    def calculate_position_size(self, price: float, confidence: float = 0.5, aggressive: bool = False) -> int:
+        """
+        Sizing for demo paper portfolio.
+        Aggressive mode: double the allocation for faster portfolio growth.
+        """
+        if aggressive:
+            # Aggressive: double the allocation
+            if confidence > 0.60:
+                risk_pct = 0.80  # 80% for high conviction aggressive
+            elif confidence > 0.45:
+                risk_pct = 0.50  # 50%
+            else:
+                risk_pct = 0.30  # 30%
         else:
-            risk_pct = 0.15
+            # Normal mode
+            if confidence > 0.60:
+                risk_pct = 0.40
+            elif confidence > 0.45:
+                risk_pct = 0.25
+            else:
+                risk_pct = 0.15
 
         risk_cap_from_env = float(os.environ.get("PAPER_MAX_POSITION_PCT", 0.0) or 0.0)
         if risk_cap_from_env <= 0:
@@ -196,6 +209,7 @@ class PaperPortfolio:
         confidence: float = 0.5,
         amount_to_invest: float = None,
         adv_20d: float = 0,
+        aggressive: bool = False,
     ):
         """Executes a paper trade using real market prices but virtual money."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -209,7 +223,7 @@ class PaperPortfolio:
                 if size == 0 and self.balance >= price and float(amount_to_invest) >= price:
                     size = 1
             else:
-                size = self.calculate_position_size(price, confidence)
+                size = self.calculate_position_size(price, confidence, aggressive=aggressive)
             cost = size * price
 
             if size > 0 and self.balance >= cost:
