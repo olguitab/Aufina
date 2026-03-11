@@ -7,6 +7,8 @@ import importlib
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import datetime
+import pytz
 from dotenv import load_dotenv
 
 
@@ -30,6 +32,20 @@ from universe import get_trading_watchlist
 load_dotenv()
 
 st.set_page_config(page_title="Aureus Wealth", page_icon="💼", layout="wide")
+
+# --- Horario Bolsa de Santiago ---
+CHILE_TZ = pytz.timezone("America/Santiago")
+MARKET_OPEN = datetime.time(9, 30)
+MARKET_CLOSE = datetime.time(16, 0)
+
+def is_market_open():
+    now = datetime.datetime.now(CHILE_TZ).time()
+    return MARKET_OPEN <= now <= MARKET_CLOSE
+
+# --- Congelar portafolio fuera de horario de mercado ---
+if not is_market_open():
+    st.warning("⏳ El portafolio está congelado fuera del horario de la Bolsa de Santiago (09:30 a 16:00). No se pueden realizar operaciones ni actualizar valores en este momento.")
+    st.stop()
 
 _BOT_THREAD_LOCK = threading.Lock()
 _BOT_THREAD = None
