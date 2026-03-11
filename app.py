@@ -407,23 +407,71 @@ elif page == "AFP flows":
     rows = []
     for tk in tickers:
         data = latest_ticker_data.get(tk)
-        if data is None:
-            data = market_data.get_comprehensive_data(tk)
-        tech = data.get("technical_data", {})
-        afp = afp_tracker.estimate_pressure(tk, tech)
-        rows.append(
-            {
-                "ticker": tk,
-                "sector": afp.get("sector"),
-                "pressure_type": afp.get("pressure_type"),
-                "pressure_score": afp.get("pressure_score"),
-            }
-        )
 
-    afp_df = pd.DataFrame(rows).sort_values("pressure_score", ascending=False)
-    st.dataframe(afp_df, width="stretch", hide_index=True)
+        elif page == "Prueba Ayer":
+            st.title("Simulación de Portafolio - Día de Ayer (Trading Automático)")
+            st.info("Esta vista simula el portafolio como si recién abriera el mercado ayer a las 9:30am. Pulsa ACTIVAR para iniciar el trading automático demo con 10 millones.")
 
-if st.sidebar.button("Reiniciar paper demo"):
-    PaperTradingDB.reset()
-    st.session_state.paper_portfolio = PaperPortfolio()
-    st.rerun()
+            from datetime import datetime, timedelta, time as dtime
+            fecha_ayer = (datetime.now() - timedelta(days=1)).date()
+            hora_apertura = dtime(hour=9, minute=30)
+            hora_cierre = dtime(hour=16, minute=0)
+            dt_inicio = datetime.combine(fecha_ayer, hora_apertura)
+            dt_fin = datetime.combine(fecha_ayer, hora_cierre)
+
+            # Estado de la simulación
+            if 'demo_ayer_activado' not in st.session_state:
+                st.session_state.demo_ayer_activado = False
+            if 'demo_ayer_datetime' not in st.session_state:
+                st.session_state.demo_ayer_datetime = dt_inicio
+            if 'demo_ayer_portfolio' not in st.session_state:
+                st.session_state.demo_ayer_portfolio = PaperPortfolio()
+                st.session_state.demo_ayer_portfolio.balance = 10_000_000.0
+                st.session_state.demo_ayer_portfolio.positions = {}
+                st.session_state.demo_ayer_portfolio.position_costs = {}
+            if 'demo_ayer_trades' not in st.session_state:
+                st.session_state.demo_ayer_trades = []
+
+            if not st.session_state.demo_ayer_activado:
+                if st.button("ACTIVAR TRADING AUTOMÁTICO DE AYER"):
+                    st.session_state.demo_ayer_activado = True
+                else:
+                    st.stop()
+
+            # Mostrar hora simulada
+            hora_sim = st.session_state.demo_ayer_datetime
+            st.markdown(f"### Hora simulada: {hora_sim.strftime('%Y-%m-%d %H:%M')}")
+
+            # Ejecutar ciclo de trading solo si no hemos llegado al cierre
+            if hora_sim <= dt_fin:
+                demo_bot = AutonomousBot()
+                demo_bot.paper_portfolio = st.session_state.demo_ayer_portfolio
+                # Simula decisiones de trading con precios de ese minuto
+                for ticker in get_trading_watchlist():
+                    try:
+                        data = demo_bot.market_data.get_comprehensive_data(ticker, date=hora_sim.date())
+                        price = data.get("current_price", 0.0)
+                        if price > 0:
+                            demo_bot._execute_paper_signal(ticker, "BUY", price, f"Demo auto {hora_sim.strftime('%H:%M')}", confidence=0.5)
+                            st.session_state.demo_ayer_trades.append({"hora": hora_sim.strftime('%H:%M'), "ticker": ticker, "accion": "BUY", "precio": price})
+                    except Exception:
+                        continue
+                # Avanza la hora simulada 1 minuto real = 1 minuto simulado
+                st.session_state.demo_ayer_datetime = hora_sim + timedelta(minutes=1)
+                st_autorefresh(interval=60 * 1000, key="aureus_demo_ayer")
+            else:
+                st.success("¡Fin de la simulación de ayer!")
+
+            # Mostrar métricas y portafolio
+            st.metric("Valor Total", f"${st.session_state.demo_ayer_portfolio.get_total_value(MarketData()):,.0f}")
+            st.metric("Cash Libre", f"${st.session_state.demo_ayer_portfolio.balance:,.0f}")
+            st.write("Distribución de portafolio:")
+            dist_df = pd.DataFrame(list(st.session_state.demo_ayer_portfolio.positions.items()), columns=["Activo", "Cantidad"])
+            if not dist_df.empty and float(dist_df["Cantidad"].sum()) > 0:
+                st.dataframe(dist_df, hide_index=True)
+            else:
+                st.info("Sin posiciones abiertas.")
+
+            if st.session_state.demo_ayer_trades:
+                st.subheader("Historial de operaciones demo")
+                st.dataframe(pd.DataFrame(st.session_state.demo_ayer_trades), hide_index=True)
