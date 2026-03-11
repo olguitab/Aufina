@@ -100,6 +100,7 @@ def send_telegram(message: str, chat_id_override: str = None):
     # except Exception as e:
     #     logger.error(f"Telegram notification failed: {e}")
     # Bloqueado envío a Telegram por mantenimiento.
+    return None
 
 class AutonomousBot:
     _START_GUARD_LOCK = threading.Lock()
