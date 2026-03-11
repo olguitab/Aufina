@@ -287,6 +287,7 @@ elif page == "Prueba Ayer":
     st.title("Simulación de Portafolio - Día de Ayer (Trading Automático)")
     st.info("Esta vista simula el portafolio como si recién abriera el mercado ayer a las 9:30am. Pulsa ACTIVAR para iniciar el trading automático demo con 10 millones.")
 
+    # --- Simulación progresiva de "Prueba Ayer" ---
     from datetime import datetime, timedelta, time as dtime
     fecha_ayer = (datetime.now() - timedelta(days=1)).date()
     hora_apertura = dtime(hour=9, minute=30)
@@ -350,61 +351,6 @@ elif page == "Prueba Ayer":
     if st.session_state.demo_ayer_trades:
         st.subheader("Historial de operaciones demo")
         st.dataframe(pd.DataFrame(st.session_state.demo_ayer_trades), hide_index=True)
-    from datetime import datetime, timedelta, time as dtime
-    fecha_ayer = (datetime.now() - timedelta(days=1)).date()
-    hora_apertura = dtime(hour=9, minute=30)
-    dt_inicio = datetime.combine(fecha_ayer, hora_apertura)
-
-    if 'demo_ayer_activado' not in st.session_state:
-        st.session_state.demo_ayer_activado = False
-    if 'demo_ayer_resultado' not in st.session_state:
-        st.session_state.demo_ayer_resultado = None
-
-
-    if not st.session_state.demo_ayer_activado:
-        if st.button("ACTIVAR TRADING AUTOMÁTICO DE AYER"):
-            st.session_state.demo_ayer_activado = True
-        else:
-            st.stop()
-
-    # --- Simulación de trading automático demo ---
-    from trading_bot import AutonomousBot
-    demo_bot = AutonomousBot()
-    demo_bot.paper_portfolio = PaperPortfolio()  # Reinicia demo a 10M
-    demo_bot.paper_portfolio.balance = 10_000_000.0
-    demo_bot.paper_portfolio.positions = {}
-    demo_bot.paper_portfolio.position_costs = {}
-
-    # Ejecutar un ciclo de trading como si fuera ayer a las 9:30am
-    # (puedes expandir esto a múltiples ciclos si quieres backtest más largo)
-    # Forzamos precios históricos de ayer en MarketData
-    resultados = []
-    for ticker in demo_bot.paper_portfolio.positions.keys():
-        # Limpiar posiciones para demo puro
-        demo_bot.paper_portfolio.positions[ticker] = 0
-    # Simula un ciclo de trading demo con precios de ayer
-    for ticker in get_trading_watchlist():
-        try:
-            data = demo_bot.market_data.get_comprehensive_data(ticker, date=fecha_ayer)
-            price = data.get("current_price", 0.0)
-            if price > 0:
-                # Simula decisión de compra demo (puedes mejorar lógica)
-                demo_bot._execute_paper_signal(ticker, "BUY", price, "Demo auto ayer", confidence=0.5)
-                resultados.append({"ticker": ticker, "accion": "BUY", "precio": price})
-        except Exception:
-            continue
-
-    st.session_state.demo_ayer_resultado = demo_bot.paper_portfolio
-
-    st.success("¡Trading automático demo de ayer ejecutado!")
-    st.metric("Valor Total (fin de ayer)", f"${demo_bot.paper_portfolio.get_total_value(demo_bot.market_data):,.0f}")
-    st.metric("Cash Libre (fin de ayer)", f"${demo_bot.paper_portfolio.balance:,.0f}")
-    st.write("Distribución de portafolio (fin de ayer):")
-    dist_df = pd.DataFrame(list(demo_bot.paper_portfolio.positions.items()), columns=["Activo", "Cantidad"])
-    if not dist_df.empty and float(dist_df["Cantidad"].sum()) > 0:
-        st.dataframe(dist_df, hide_index=True)
-    else:
-        st.info("Sin posiciones abiertas al cierre de la demo.")
 
 elif page == "Predicciones":
     st.subheader("Predicciones registradas")
