@@ -90,15 +90,16 @@ LLM_BATCH_SIZE = max(1, _env_int("LLM_BATCH_SIZE", local_default=6, hosted_defau
 MARKET_DATA_MAX_WORKERS = max(1, _env_int("MARKET_DATA_MAX_WORKERS", local_default=4, hosted_default=3))
 
 def send_telegram(message: str, chat_id_override: str = None):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = chat_id_override or os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        http_requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
-    except Exception as e:
-        logger.error(f"Telegram notification failed: {e}")
+    # token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    # chat_id = chat_id_override or os.environ.get("TELEGRAM_CHAT_ID")
+    # if not token or not chat_id:
+    #     return
+    # try:
+    #     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    #     http_requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
+    # except Exception as e:
+    #     logger.error(f"Telegram notification failed: {e}")
+    # Bloqueado envío a Telegram por mantenimiento.
 
 class AutonomousBot:
     _START_GUARD_LOCK = threading.Lock()
@@ -176,7 +177,7 @@ class AutonomousBot:
         """Sends Telegram alerts only when automatic notifications are enabled."""
         if not self.telegram_alerts_enabled:
             return
-        send_telegram(message, chat_id_override)
+        # send_telegram(message, chat_id_override)  # Bloqueado envío a Telegram
 
     def _log_context_snapshot(self, context_snapshot):
         try:
@@ -511,30 +512,30 @@ class AutonomousBot:
                             from database import TradingDB
                             self.portfolio.balance = new_cap
                             TradingDB.save_state(new_cap)
-                            send_telegram(
-                                f"✅ Capital de la cuenta real actualizado a ${new_cap:,.0f} CLP.\n"
-                                f"⏳ Calculando plan de compra sugerido...",
-                                str(chat_id)
-                            )
+                            # send_telegram(
+                            #     f"✅ Capital de la cuenta real actualizado a ${new_cap:,.0f} CLP.\n"
+                            #     f"⏳ Calculando plan de compra sugerido...",
+                            #     str(chat_id)
+                            # )  # Bloqueado envío a Telegram
                             recommendation_msg = self._get_buy_recommendation_message(new_cap)
-                            send_telegram(recommendation_msg, str(chat_id))
+                            # send_telegram(recommendation_msg, str(chat_id))  # Bloqueado envío a Telegram
                         except ValueError:
-                            send_telegram("❌ Error: Formato incorrecto. Usa: `/capital 5000000`", str(chat_id))
+                            # send_telegram("❌ Error: Formato incorrecto. Usa: `/capital 5000000`", str(chat_id))  # Bloqueado envío a Telegram
 
                 elif cmd == "/stop":
                     self.telegram_alerts_enabled = False
-                    send_telegram(
-                        "⏸️ Notificaciones automáticas pausadas.\n"
-                        "Usa `/start` para reanudarlas.",
-                        str(chat_id)
-                    )
+                    # send_telegram(
+                    #     "⏸️ Notificaciones automáticas pausadas.\n"
+                    #     "Usa `/start` para reanudarlas.",
+                    #     str(chat_id)
+                    # )  # Bloqueado envío a Telegram
 
                 elif cmd == "/start":
                     self.telegram_alerts_enabled = True
-                    send_telegram(
-                        "▶️ Notificaciones automáticas reactivadas.",
-                        str(chat_id)
-                    )
+                    # send_telegram(
+                    #     "▶️ Notificaciones automáticas reactivadas.",
+                    #     str(chat_id)
+                    # )  # Bloqueado envío a Telegram
                 
                 elif cmd == "/comprar":
                     if len(parts) >= 4:
