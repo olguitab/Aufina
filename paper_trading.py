@@ -9,10 +9,12 @@ import json
 import os
 from typing import Dict, List, Any
 from datetime import datetime
+import pytz
 from paths import PAPER_TRADING_DB_FILE, ensure_project_dirs
 
 PAPER_DB_PATH = PAPER_TRADING_DB_FILE
 INITIAL_BALANCE_CLP = 10_000_000.0  # 10 million CLP
+CHILE_TZ = pytz.timezone("America/Santiago")
 
 class PaperTradingDB:
     @staticmethod
@@ -212,7 +214,7 @@ class PaperPortfolio:
         aggressive: bool = False,
     ):
         """Executes a paper trade using real market prices but virtual money."""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(CHILE_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
         if signal == "HOLD":
             return
@@ -263,10 +265,13 @@ class PaperPortfolio:
             if qty > 0:
                 try:
                     data = market_data_engine.get_comprehensive_data(ticker)
-                    price = data.get("current_price", 0)
-                    total += qty * price
-                except:
-                    pass
+                    price = data.get("current_price", 0) or data.get("close_price", 0)
+                    if price and price > 0:
+                        total += qty * price
+                    else:
+                        total += qty * float(self.position_costs.get(ticker, 0.0) or 0.0)
+                except Exception:
+                    total += qty * float(self.position_costs.get(ticker, 0.0) or 0.0)
         return total
 
     def get_roi(self) -> float:

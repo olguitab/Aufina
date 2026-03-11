@@ -38,8 +38,12 @@ CHILE_TZ = pytz.timezone("America/Santiago")
 MARKET_OPEN = datetime.time(9, 30)
 MARKET_CLOSE = datetime.time(16, 0)
 
+
+def chile_now() -> datetime.datetime:
+    return datetime.datetime.now(CHILE_TZ)
+
 def is_market_open():
-    now = datetime.datetime.now(CHILE_TZ).time()
+    now = chile_now().time()
     return MARKET_OPEN <= now <= MARKET_CLOSE
 
 
@@ -139,6 +143,10 @@ st_autorefresh(interval=20 * 1000, key="aureus_refresh")
 # No reinicializar el portafolio en cada recarga, solo si no existe en session_state
 
 paper = st.session_state.paper_portfolio
+# Sincroniza estado desde DB en cada rerun para reflejar operaciones del bot en background.
+paper.balance = PaperTradingDB.load_state()
+paper.positions = PaperTradingDB.load_positions()
+paper.position_costs = PaperTradingDB.load_position_costs()
 paper_trades = PaperTradingDB.load_trade_log()
 market_data = MarketData()
 risk_engine = RiskEngine()
@@ -156,21 +164,16 @@ portfolio_distribution = {"Cash": paper.balance}
 latest_ticker_data = {}
 for ticker, qty in active_positions.items():
     px_now = 0.0
-    if market_open:
-        try:
-            data = market_data.get_comprehensive_data(ticker)
-            latest_ticker_data[ticker] = data
-            px_now = data.get("current_price", 0.0)
-        except Exception:
-            pass
-    else:
-        # Mercado cerrado: usar último precio almacenado/cierre
-        try:
-            data = market_data.get_comprehensive_data(ticker)
-            latest_ticker_data[ticker] = data
+    try:
+        data = market_data.get_comprehensive_data(ticker)
+        latest_ticker_data[ticker] = data
+        if market_open:
+            px_now = data.get("current_price", 0.0) or data.get("close_price", 0.0)
+        else:
+            # Mercado cerrado: prioriza cierre, pero usa current_price si es lo único disponible.
             px_now = data.get("close_price", 0.0) or data.get("current_price", 0.0)
-        except Exception:
-            pass
+    except Exception:
+        pass
     if px_now and px_now > 0:
         total_value += qty * px_now
         portfolio_distribution[ticker] = qty * px_now
@@ -250,6 +253,7 @@ risk_profile = "agresivo"
 st.title("Aureus Wealth — Plataforma de Decisión")
 st.caption(
     f"Perfil: {risk_profile} | Mercado {'abierto' if market_open else 'cerrado'} | "
+    f"Hora Chile {chile_now().strftime('%Y-%m-%d %H:%M:%S')} | "
     f"Actualización automática 20s"
 )
 
@@ -299,13 +303,19 @@ if page == "Portafolio":
             
         if "ticker" in trades_df.columns:
             display_cols.append("ticker")
+        elif "Ticker" in trades_df.columns:
+            display_cols.append("Ticker")
         elif "Activo" in trades_df.columns:
             display_cols.append("Activo")
             
         if "signal" in trades_df.columns:
             display_cols.append("signal")
+        elif "Signal" in trades_df.columns:
+            display_cols.append("Signal")
         elif "Acción" in trades_df.columns:
             display_cols.append("Acción")
+        elif "accion" in trades_df.columns:
+            display_cols.append("accion")
             
         if "price" in trades_df.columns:
             display_cols.append("price")
@@ -333,18 +343,26 @@ if page == "Portafolio":
                 "Hora": "⏰ Hora",
                 "hora": "⏰ Hora",
                 "ticker": "📌 Activo",
+                "Ticker": "📌 Activo",
                 "Activo": "📌 Activo",
                 "signal": "✅ Acción",
+                "Signal": "✅ Acción",
                 "Acción": "✅ Acción",
+                "accion": "✅ Acción",
                 "price": "💰 Precio",
                 "Precio": "💰 Precio",
                 "quantity": "📊 Cantidad",
                 "Cantidad": "📊 Cantidad",
                 "reasoning": "📝 Razón",
                 "Razón": "📝 Razón",
-                "confidence": "🎯 Confianza"
+                "confidence": "🎯 Confianza",
+                "Confianza": "🎯 Confianza"
             }
             trades_display = trades_display.rename(columns=rename_map)
+            if "✅ Acción" in trades_display.columns:
+                trades_display["✅ Acción"] = (
+                    trades_display["✅ Acción"].astype(str).str.upper().map({"BUY": "BUY", "SELL": "SELL"}).fillna(trades_display["✅ Acción"])
+                )
             st.dataframe(trades_display, hide_index=True, use_container_width=True)
         else:
             st.info("No hay datos de operaciones disponibles")
