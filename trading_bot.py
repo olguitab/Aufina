@@ -522,6 +522,7 @@ class AutonomousBot:
                             # send_telegram(recommendation_msg, str(chat_id))  # Bloqueado envío a Telegram
                         except ValueError:
                             # send_telegram("❌ Error: Formato incorrecto. Usa: `/capital 5000000`", str(chat_id))  # Bloqueado envío a Telegram
+                            pass
 
                 elif cmd == "/stop":
                     self.telegram_alerts_enabled = False
