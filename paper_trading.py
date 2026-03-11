@@ -201,6 +201,12 @@ class PaperPortfolio:
             configured_risk_limit = float(os.environ.get("RISK_MAX_POSITION_PCT", 0.24) or 0.24)
             risk_cap_from_env = max(0.05, configured_risk_limit - 0.02)
 
+        # For tiny demo accounts, concentrate capital to maximize chance of meaningful gains.
+        small_portfolio_clp = float(os.environ.get("PAPER_SMALL_PORTFOLIO_CLP", 100000) or 100000)
+        if self.balance <= small_portfolio_clp:
+            risk_cap_from_env = max(risk_cap_from_env, 1.0)
+            risk_pct = max(risk_pct, 0.95)
+
         risk_pct = min(risk_pct, risk_cap_from_env)
 
         amount = self.balance * risk_pct

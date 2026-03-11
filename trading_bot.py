@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import fcntl
+import math
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -354,10 +355,23 @@ class AutonomousBot:
                 if qty > 0
             }
             min_order_value = float(getattr(self.risk_engine, "min_order_clp", 0.0) or 0.0)
-            min_qty = max(1, int(min_order_value / price)) if min_order_value > 0 else 1
+            small_portfolio_clp = float(getattr(self.risk_engine, "small_portfolio_clp", 100000) or 100000)
+            if self.paper_portfolio.balance <= small_portfolio_clp:
+                min_order_value = min(min_order_value, max(1000.0, self.paper_portfolio.balance * 0.25))
+            min_qty = max(1, int(math.ceil(min_order_value / price))) if min_order_value > 0 else 1
             proposed_qty = int(suggested_qty)
             ok = False
             reason = ""
+
+            max_affordable_qty = int(self.paper_portfolio.balance / price) if price > 0 else 0
+            if max_affordable_qty <= 0:
+                reason = "capital insuficiente"
+            elif max_affordable_qty < min_qty:
+                reason = (
+                    f"capital insuficiente para monto mínimo (necesita {min_qty} acciones, "
+                    f"máximo posible {max_affordable_qty})"
+                )
+
             while proposed_qty >= min_qty:
                 ok, reason = self.risk_engine.validate_buy(
                     ticker=ticker,
@@ -373,6 +387,9 @@ class AutonomousBot:
                 if reduced_qty == proposed_qty:
                     reduced_qty = proposed_qty - 1
                 proposed_qty = reduced_qty
+
+            if not ok and not reason:
+                reason = "cantidad sugerida no alcanza el mínimo permitido"
 
             if not ok:
                 logger.info(f"[PAPER][RISK BLOCK] BUY {ticker} bloqueado: {reason}")

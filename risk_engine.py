@@ -20,6 +20,7 @@ class RiskEngine:
         self.max_total_invested_pct = float(os.environ.get("RISK_MAX_TOTAL_INVESTED_PCT", 1.0 if is_hosted else 1.0))
         self.max_open_positions = int(os.environ.get("RISK_MAX_OPEN_POSITIONS", 40 if is_hosted else 32))
         self.min_order_clp = float(os.environ.get("RISK_MIN_ORDER_CLP", 10000 if is_hosted else 10000))
+        self.small_portfolio_clp = float(os.environ.get("RISK_SMALL_PORTFOLIO_CLP", 100000))
 
     @staticmethod
     def _portfolio_values(
@@ -53,15 +54,25 @@ class RiskEngine:
             return False, "orden inválida"
 
         order_value = proposed_qty * proposed_price
-        if order_value < self.min_order_clp:
-            return False, f"orden menor al mínimo ({self.min_order_clp:,.0f} CLP)"
-
-        if order_value > max(cash_balance, 0.0):
-            return False, "capital insuficiente"
 
         equity, position_values = self._portfolio_values(cash_balance, positions, ticker_prices)
         if equity <= 0:
             return False, "equity inválido"
+
+        # For tiny demo accounts, allow concentrated entries so the bot can actually deploy capital.
+        effective_max_position_pct = self.max_position_pct
+        if equity <= self.small_portfolio_clp:
+            effective_max_position_pct = 1.0
+
+        effective_min_order_clp = self.min_order_clp
+        if equity <= self.small_portfolio_clp:
+            effective_min_order_clp = min(self.min_order_clp, max(1000.0, equity * 0.25))
+
+        if order_value < effective_min_order_clp:
+            return False, f"orden menor al mínimo ({effective_min_order_clp:,.0f} CLP)"
+
+        if order_value > max(cash_balance, 0.0):
+            return False, "capital insuficiente"
 
         open_positions = len([t for t, v in positions.items() if v > 0])
         is_new_position = positions.get(ticker, 0) <= 0
@@ -70,10 +81,10 @@ class RiskEngine:
 
         current_ticker_value = position_values.get(ticker, 0.0)
         projected_ticker_value = current_ticker_value + order_value
-        if (projected_ticker_value / equity) > self.max_position_pct:
+        if (projected_ticker_value / equity) > effective_max_position_pct:
             return False, (
                 f"concentración por activo excedida ({projected_ticker_value / equity:.1%} > "
-                f"{self.max_position_pct:.1%})"
+                f"{effective_max_position_pct:.1%})"
             )
 
         invested_value = sum(position_values.values())
