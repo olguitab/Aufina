@@ -59,10 +59,10 @@ class MarketData:
         return max(int((next_open - current).total_seconds()), 0)
 
     @staticmethod
-    def get_comprehensive_data(ticker: str) -> Dict[str, Any]:
+    def get_comprehensive_data(ticker: str, date: datetime.date = None) -> Dict[str, Any]:
         """Fetches all necessary data (Technicals, News, Status) in a single workflow.
         Reduces YFinance overhead significantly.
-        """
+        If date is provided, returns data as of that date (historical close)."""
         ticker = MarketData.normalize_ticker(ticker)
         now_ts = time_module.time()
         blocked_until = MarketData._invalid_ticker_until.get(ticker, 0.0)
@@ -85,8 +85,29 @@ class MarketData:
             MarketData._invalid_ticker_until.pop(ticker, None)
 
             close = hist['Close']
-            current = close.iloc[-1]
-            prev_close = close.iloc[-2]
+            # Si se pasa una fecha, buscar el precio de cierre de ese día
+            if date is not None:
+                # Buscar el índice más cercano <= date
+                close_hist = close.copy()
+                close_hist.index = pd.to_datetime(close_hist.index).date
+                if date in close_hist.index:
+                    current = close_hist.loc[date]
+                    idx = list(close_hist.index).index(date)
+                    prev_close = close_hist.iloc[idx - 1] if idx > 0 else current
+                else:
+                    # Buscar la fecha más cercana anterior
+                    prev_dates = [d for d in close_hist.index if d < date]
+                    if prev_dates:
+                        last_date = max(prev_dates)
+                        current = close_hist.loc[last_date]
+                        idx = list(close_hist.index).index(last_date)
+                        prev_close = close_hist.iloc[idx - 1] if idx > 0 else current
+                    else:
+                        current = close.iloc[-1]
+                        prev_close = close.iloc[-2]
+            else:
+                current = close.iloc[-1]
+                prev_close = close.iloc[-2]
             
             # --- Technical Indicators ---
             ma20 = close.rolling(window=20).mean().iloc[-1]

@@ -196,6 +196,7 @@ page = st.sidebar.radio(
     "Secciones",
     [
         "Portafolio",
+        "Prueba Ayer",
         "Predicciones",
         "Explainability",
         "Risk",
@@ -260,35 +261,76 @@ elif page == "Prueba Ayer":
     from datetime import datetime, timedelta
     fecha_ayer = (datetime.now() - timedelta(days=1)).date()
 
-    test_total_value = paper.balance
-    test_portfolio_distribution = {"Cash": paper.balance}
-    test_latest_ticker_data = {}
-    for ticker, qty in active_positions.items():
-        px_ayer = 0.0
-        try:
-            # Intenta obtener el precio de ayer (requiere soporte en MarketData)
-            data = market_data.get_comprehensive_data(ticker, date=fecha_ayer)
-            test_latest_ticker_data[ticker] = data
-            px_ayer = data.get("current_price", 0.0)
-        except Exception:
-            pass
-        if px_ayer and px_ayer > 0:
-            test_total_value += qty * px_ayer
-            test_portfolio_distribution[ticker] = qty * px_ayer
-        else:
-            avg_cost = paper.position_costs.get(ticker, 0.0)
-            test_total_value += qty * avg_cost
-            test_portfolio_distribution[ticker] = qty * avg_cost
+    # Estado simulado de portafolio para demo
+    demo_balance = paper.balance
+    demo_positions = paper.positions.copy()
+    demo_position_costs = paper.position_costs.copy()
+    demo_trades = []
 
-    st.metric("Valor Total (ayer)", f"${test_total_value:,.0f}")
-    st.metric("Cash Libre (ayer)", f"${paper.balance:,.0f}")
+    # Mostrar métricas y distribución con precios de ayer
+    demo_total_value = demo_balance
+    demo_portfolio_distribution = {"Cash": demo_balance}
+    demo_latest_ticker_data = {}
+    for ticker, qty in demo_positions.items():
+        if qty > 0:
+            px_ayer = 0.0
+            try:
+                data = market_data.get_comprehensive_data(ticker, date=fecha_ayer)
+                demo_latest_ticker_data[ticker] = data
+                px_ayer = data.get("current_price", 0.0)
+            except Exception:
+                pass
+            if px_ayer and px_ayer > 0:
+                demo_total_value += qty * px_ayer
+                demo_portfolio_distribution[ticker] = qty * px_ayer
+            else:
+                avg_cost = demo_position_costs.get(ticker, 0.0)
+                demo_total_value += qty * avg_cost
+                demo_portfolio_distribution[ticker] = qty * avg_cost
+
+    st.metric("Valor Total (ayer)", f"${demo_total_value:,.0f}")
+    st.metric("Cash Libre (ayer)", f"${demo_balance:,.0f}")
     st.write("Distribución de portafolio (ayer):")
-    dist_df = pd.DataFrame(list(test_portfolio_distribution.items()), columns=["Activo", "Valor"])
+    dist_df = pd.DataFrame(list(demo_portfolio_distribution.items()), columns=["Activo", "Valor"])
     if not dist_df.empty and float(dist_df["Valor"].sum()) > 0:
         pie = px.pie(dist_df, values="Valor", names="Activo", hole=0.5)
         st.plotly_chart(pie, use_container_width=True)
     else:
         st.info("Sin datos suficientes para mostrar la distribución de ayer.")
+
+    st.subheader("Simular operación histórica (ayer)")
+    tickers = list(demo_positions.keys())
+    if tickers:
+        selected_ticker = st.selectbox("Selecciona ticker para operar", tickers)
+        accion = st.radio("Acción", ["Comprar", "Vender", "Mantener (Hold)"])
+        cantidad = st.number_input("Cantidad", min_value=1, max_value=int(demo_positions[selected_ticker]) if accion != "Comprar" else 1000, value=1)
+        if st.button("Ejecutar operación demo"):
+            precio_ayer = demo_latest_ticker_data.get(selected_ticker, {}).get("current_price", 0.0)
+            if accion == "Comprar":
+                costo = cantidad * precio_ayer
+                if costo <= demo_balance:
+                    demo_balance -= costo
+                    demo_positions[selected_ticker] = demo_positions.get(selected_ticker, 0) + cantidad
+                    demo_trades.append({"ticker": selected_ticker, "accion": "Compra", "cantidad": cantidad, "precio": precio_ayer})
+                    st.success(f"Compra simulada de {cantidad} {selected_ticker} a ${precio_ayer:,.2f}")
+                else:
+                    st.error("No hay suficiente cash para comprar.")
+            elif accion == "Vender":
+                if cantidad <= demo_positions.get(selected_ticker, 0):
+                    demo_balance += cantidad * precio_ayer
+                    demo_positions[selected_ticker] -= cantidad
+                    demo_trades.append({"ticker": selected_ticker, "accion": "Venta", "cantidad": cantidad, "precio": precio_ayer})
+                    st.success(f"Venta simulada de {cantidad} {selected_ticker} a ${precio_ayer:,.2f}")
+                else:
+                    st.error("No tienes suficientes acciones para vender.")
+            else:
+                st.info("Mantienes la posición (Hold)")
+    else:
+        st.info("No hay posiciones para operar en demo.")
+
+    if demo_trades:
+        st.subheader("Historial de operaciones demo (ayer)")
+        st.dataframe(pd.DataFrame(demo_trades), hide_index=True)
 
 elif page == "Predicciones":
     st.subheader("Predicciones registradas")
