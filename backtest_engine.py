@@ -1,319 +1,339 @@
 """
-Aureus Backtest Engine
-Simulates the performance of the trading bot over the last 6 months.
-Uses the trained Deep Quant ensemble and the dual-confirmation sell strategy.
+Aureus V2 Backtest Engine — Multi-Horizon Validation
+=====================================================
+Simulates trading performance using V2 multi-horizon predictions.
+Tests holding periods of 5, 10, and 20 days against IPSA benchmark.
 """
 
+import os
+import logging
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from datetime import datetime, timedelta
-import os
-from models import Predictor, FEATURE_COLS
-from features import MACRO_INDICATORS
-from universe import get_training_watchlist
-from paths import BACKTEST_RESULTS_FILE, BACKTEST_TRADES_FILE, MODEL_FILE, ensure_project_dirs
+from paths import BACKTEST_RESULTS_FILE, DATA_DIR, ensure_project_dirs
 
-# --- Configuration ---
-INITIAL_BALANCE = 10_000_000.0  # 10M CLP
-TRADING_FEE = 0.003            # 0.3% per trade
-SLIPPAGE = 0.001               # 0.1% slippage
-START_DATE = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
-END_DATE = datetime.now().strftime('%Y-%m-%d')
+try:
+    from models_v2 import MultiHorizonPredictor
+    HAS_V2 = MultiHorizonPredictor.is_available()
+except ImportError:
+    HAS_V2 = False
+
+from models import Predictor
+from features import generate_features, download_historical_data, PROCESSED_FEATURES_FILE
+from universe import get_training_watchlist
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
+
 
 class BacktestEngine:
-    def __init__(self, watchlist: list = None):
-        if watchlist is None:
-            watchlist = get_training_watchlist(include_global=False)[:30]
-        self.watchlist = watchlist
-        self.balance = INITIAL_BALANCE
-        self.positions = {}        # {ticker: quantity}
-        self.entry_prices = {}     # {ticker: price}
-        self.peak_prices = {}      # {ticker: price}
-        self.trade_history = []
-        self.equity_curve = []
-        self.last_known_prices = {}
-        
-        # Sizing / Strategy Params
-        self.TRAILING_STOP_PCT = 0.05
-        self.TAKE_PROFIT_PCT = 0.20    # Adjusted to 20% for faster rotation
-        self.INVESTMENT_PER_TICKER_PCT = 0.50 
-        self.BUY_THRESHOLD = 0.37      # Final High-Voltage Threshold
+    """
+    Multi-Horizon Backtest: simulates trading with V2 model over historical data.
+    
+    Strategy:
+    - Entry: V2 composite_signal == "BUY" with best_probability >= threshold
+    - Holding: Use suggested_hold_days from V2; hold for at least min_hold_days
+    - Exit: Take profit, trailing stop after protection, or hold period expiry
+    - Position sizing: Equal weight across concurrent positions
+    """
 
-    @staticmethod
-    def _predict_prob_from_row(row: pd.Series) -> float:
-        try:
-            X = pd.DataFrame([row[FEATURE_COLS]])
-            model_payload = Predictor.load_model()
-            if not model_payload:
-                return 0.0
-            direction_model = model_payload.get("direction_model") if isinstance(model_payload, dict) else model_payload
-            return float(direction_model.predict_proba(X)[0][1])
-        except Exception:
-            return 0.0
-
-    def fetch_data(self):
-        """Fetches 1 year of data to have enough for indicators in the 6-month window."""
-        print(f"📥 Fetching historical data for {len(self.watchlist)} tickers...")
-        all_dfs = {}
-        
-        # Fetching for 1 year to ensure RSI/MA buffers
-        start_fetch = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-        
-        for ticker in self.watchlist:
-            try:
-                data = yf.download(ticker, start=start_fetch, end=END_DATE, interval="1d", progress=False)
-                if not data.empty:
-                    # Flatten multi-index if necessary (newer yfinance)
-                    if isinstance(data.columns, pd.MultiIndex):
-                        data.columns = data.columns.get_level_values(0)
-                    all_dfs[ticker] = data
-            except Exception as e:
-                print(f"Error fetching {ticker}: {e}")
-
-        # Fetch Macro data
-        macros = {}
-        for sym in MACRO_INDICATORS.keys():
-            try:
-                m_data = yf.download(sym, start=start_fetch, end=END_DATE, interval="1d", progress=False)
-                if isinstance(m_data.columns, pd.MultiIndex):
-                    m_data.columns = m_data.columns.get_level_values(0)
-                macros[sym] = m_data['Close']
-            except: pass
-            
-        return all_dfs, macros
-
-    def generate_features_daily(self, prices_df: pd.DataFrame, macro_closes: dict):
-        """Generates ML features aligned with models.FEATURE_COLS."""
-        df = prices_df.copy()
-        
-        # Momentum
-        df['Return_1d'] = df['Close'].pct_change(1)
-        df['Return_5d'] = df['Close'].pct_change(5)
-        df['Return_10d'] = df['Close'].pct_change(10)
-        df['Return_20d'] = df['Close'].pct_change(20)
-        
-        # Trend
-        df['MA20'] = df['Close'].rolling(window=20).mean()
-        df['MA50'] = df['Close'].rolling(window=50).mean()
-        df['MA200'] = df['Close'].rolling(window=200).mean()
-        df['Dist_MA20'] = (df['Close'] - df['MA20']) / df['MA20']
-        df['Dist_MA50'] = (df['Close'] - df['MA50']) / df['MA50']
-        df['Dist_MA200'] = (df['Close'] - df['MA200']) / df['MA200']
-        df['MA20_MA50_Cross'] = (df['MA20'] > df['MA50']).astype(int)
-        
-        # Volatility
-        df['Volatility_20d'] = df['Return_1d'].rolling(window=20).std()
-        df['Volatility_5d'] = df['Return_1d'].rolling(window=5).std()
-
-        # ATR ratio
-        high_low = df['High'] - df['Low']
-        high_close = (df['High'] - df['Close'].shift()).abs()
-        low_close = (df['Low'] - df['Close'].shift()).abs()
-        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df['ATR_14'] = true_range.rolling(14).mean()
-        df['ATR_Ratio'] = df['ATR_14'] / (df['Close'] + 1e-9)
-        
-        # RSI 14
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / (loss + 1e-9)
-        df['RSI_14'] = 100 - (100 / (1 + rs))
-
-        # MACD
-        ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-        ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = ema12 - ema26
-        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
-
-        # Bollinger
-        bb_mid = df['Close'].rolling(window=20).mean()
-        bb_std = df['Close'].rolling(window=20).std()
-        bb_upper = bb_mid + (2 * bb_std)
-        bb_lower = bb_mid - (2 * bb_std)
-        df['BB_Width'] = (bb_upper - bb_lower) / (bb_mid + 1e-9)
-        df['BB_Position'] = (df['Close'] - bb_lower) / ((bb_upper - bb_lower) + 1e-9)
-
-        # OBV + volume ratio
-        df['OBV'] = (np.sign(df['Close'].diff()).fillna(0.0) * df['Volume'].fillna(0.0)).cumsum()
-        df['OBV_MA20'] = df['OBV'].rolling(window=20).mean()
-        df['Volume_Ratio'] = df['Volume'] / (df['Volume'].rolling(window=20).mean() + 1e-9)
-        
-        # Macro alignment
-        for sym, name in MACRO_INDICATORS.items():
-            if sym in macro_closes:
-                df[f'Macro_{name}'] = macro_closes[sym]
-                df[f'Macro_{name}'] = df[f'Macro_{name}'].ffill()
-                df[f'Macro_{name}_Ret'] = df[f'Macro_{name}'].pct_change(1)
-
-        # Dynamic copper correlation
-        if 'Macro_Copper' in df.columns:
-            df['Copper_Rolling_Corr_30d'] = df['Close'].rolling(30).corr(df['Macro_Copper'])
-        else:
-            df['Copper_Rolling_Corr_30d'] = np.nan
-
-        # Context proxy instead of neutral constant
-        context_proxy = pd.Series(0.0, index=df.index)
-        if 'Macro_USDCLP_Ret' in df.columns:
-            context_proxy += df['Macro_USDCLP_Ret'].rolling(window=5).mean() * -1
-        if 'Macro_Copper_Ret' in df.columns:
-            context_proxy += df['Macro_Copper_Ret'].rolling(window=5).mean()
-        if 'Macro_VIX_Ret' in df.columns:
-            context_proxy += df['Macro_VIX_Ret'].rolling(window=5).mean() * -0.5
-        df['Context_Score'] = context_proxy.clip(-1, 1)
-        
-        return df.dropna()
+    def __init__(
+        self,
+        initial_capital: float = 10_000_000.0,
+        buy_threshold: float = 0.50,
+        max_positions: int = 8,
+        take_profit_pct: float = 0.12,
+        trailing_stop_pct: float = 0.05,
+        min_hold_days: int = 1,
+        backtest_months: int = 6,
+    ):
+        self.initial_capital = initial_capital
+        self.buy_threshold = buy_threshold
+        self.max_positions = max_positions
+        self.take_profit_pct = take_profit_pct
+        self.trailing_stop_pct = trailing_stop_pct
+        self.min_hold_days = min_hold_days
+        self.backtest_months = backtest_months
 
     def run(self):
-        all_data, macros = self.fetch_data()
-        
-        # Prepare feature dataframes for all tickers
-        ticker_features = {}
-        for t in all_data:
-            try:
-                ticker_features[t] = self.generate_features_daily(all_data[t], macros)
-            except Exception as e:
-                print(f"Skipping {t} features due to error: {e}")
-
-        # Get the unified timeline within the 6-month window
-        timeline = pd.date_range(start=START_DATE, end=END_DATE, freq='B')
-        print(f"🚀 Starting simulation from {START_DATE} to {END_DATE}...")
-
-        for current_date in timeline:
-            # 1. Update Portfolio Valuation
-            current_equity = self.balance
-            for ticker, qty in self.positions.items():
-                if qty > 0:
-                    # Use current price if available, else last known peak (or entry)
-                    if current_date in ticker_features[ticker].index:
-                        price = ticker_features[ticker].loc[current_date, 'Close']
-                        self.last_known_prices[ticker] = price
-                    
-                    price = self.last_known_prices.get(ticker, self.entry_prices.get(ticker, 0))
-                    current_equity += qty * price
-            self.equity_curve.append({'Date': current_date, 'Equity': current_equity})
-
-            # 2. Check Exits (Trailing Stop + ML Confirmation)
-            to_sell = []
-            for ticker, qty in list(self.positions.items()):
-                if qty <= 0: continue
-                if current_date not in ticker_features[ticker].index: continue
-                
-                curr_price = ticker_features[ticker].loc[current_date, 'Close']
-                avg_cost = self.entry_prices[ticker]
-                
-                # Update Peak Price
-                self.peak_prices[ticker] = max(self.peak_prices.get(ticker, 0), curr_price)
-                drop_from_peak = (curr_price - self.peak_prices[ticker]) / self.peak_prices[ticker]
-                pnl_pct = (curr_price - avg_cost) / avg_cost
-                
-                # Case A: Hard Take Profit (+15%)
-                if pnl_pct >= self.TAKE_PROFIT_PCT:
-                    to_sell.append((ticker, curr_price, f"Take Profit (+{pnl_pct:.1%})"))
-                
-                # Case B: Smart Trailing Stop (-5% from peak + ML check)
-                elif drop_from_peak <= -self.TRAILING_STOP_PCT:
-                    # ML Check
-                    row = ticker_features[ticker].loc[current_date]
-                    ml_prob = self._predict_prob_from_row(row)
-                    
-                    if ml_prob < 0.45:
-                        to_sell.append((ticker, curr_price, f"Confirmed Trailing Stop (Peak Drop {drop_from_peak:.1%}, ML {ml_prob:.1%})"))
-            
-            for ticker, price, reason in to_sell:
-                qty = self.positions[ticker]
-                gross_val = qty * price
-                fee = gross_val * (TRADING_FEE + SLIPPAGE)
-                net_val = gross_val - fee
-                
-                self.balance += net_val
-                pnl_clp = net_val - (qty * self.entry_prices[ticker])
-                
-                self.trade_history.append({
-                    'Date': current_date, 'Ticker': ticker, 'Action': 'SELL',
-                    'Price': price, 'Qty': qty, 'P&L CLP': pnl_clp, 'Reason': reason
-                })
-                self.positions[ticker] = 0
-                print(f"[{current_date.date()}] 💸 SELL {ticker} @ {price:.0f} | {reason} | P&L: ${pnl_clp:,.0f}")
-
-            # 3. Check Entries (Probability Scan)
-            candidates = []
-            for ticker in self.watchlist:
-                if ticker in self.positions and self.positions[ticker] > 0: continue
-                if ticker not in ticker_features or current_date not in ticker_features[ticker].index: continue
-                
-                row = ticker_features[ticker].loc[current_date]
-                ml_prob = self._predict_prob_from_row(row)
-                
-                if ml_prob > self.BUY_THRESHOLD:
-                    candidates.append((ticker, ml_prob, row['Close']))
-            
-            # Buy best candidates with available balance
-            candidates = sorted(candidates, key=lambda x: x[1], reverse=True)[:10] # Top 10 per day
-            for ticker, prob, price in candidates:
-                if self.balance > price:
-                    invest_amount = self.balance * self.INVESTMENT_PER_TICKER_PCT
-                    qty = int(invest_amount / (price * (1 + TRADING_FEE + SLIPPAGE)))
-                    if qty > 0:
-                        cost = qty * price * (1 + TRADING_FEE + SLIPPAGE)
-                        self.balance -= cost
-                        self.positions[ticker] = qty
-                        self.entry_prices[ticker] = price
-                        self.peak_prices[ticker] = price
-                        
-                        self.trade_history.append({
-                            'Date': current_date, 'Ticker': ticker, 'Action': 'BUY',
-                            'Price': price, 'Qty': qty, 'Prob': prob, 'Reason': 'ML Signal'
-                        })
-                        print(f"[{current_date.date()}] 🟢 BUY {ticker} @ {price:.0f} | Prob: {prob:.1%}")
-
-        self.report()
-
-    def report(self):
+        """Execute multi-horizon backtest."""
         ensure_project_dirs()
-        print("\n\n" + "="*50)
-        print("📊 BACKTEST PERFORMANCE REPORT (6 MONTHS)")
-        print("="*50)
-        
-        final_equity = self.equity_curve[-1]['Equity'] if self.equity_curve else INITIAL_BALANCE
-        total_roi = ((final_equity - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
-        
-        # Benchmark vs IPSA (Safe fallback)
-        ipsa_roi = 0.0
-        try:
-            ipsa = yf.download("^IPSA", start=START_DATE, end=END_DATE, progress=False)
-            if not ipsa.empty:
-                i_start = ipsa['Close'].iloc[0]
-                i_end = ipsa['Close'].iloc[-1]
-                v_start = float(i_start) if not isinstance(i_start, pd.Series) else float(i_start.iloc[0])
-                v_end = float(i_end) if not isinstance(i_end, pd.Series) else float(i_end.iloc[0])
-                ipsa_roi = ((v_end - v_start) / v_start) * 100
-        except: pass
 
-        print(f"Initial Capital: ${INITIAL_BALANCE:,.0f} CLP")
-        print(f"Final Capital:   ${final_equity:,.0f} CLP")
-        print(f"Total ROI:       {total_roi:.2f}%")
-        print(f"IPSA ROI:        {ipsa_roi:.2f}% (Benchmark)")
-        print(f"Alpha:           {total_roi - ipsa_roi:.2f}%")
-        
-        trades_df = pd.DataFrame(self.trade_history)
-        if not trades_df.empty:
-            sells = trades_df[trades_df['Action'] == 'SELL']
-            win_rate = (len(sells[sells['P&L CLP'] > 0]) / len(sells)) * 100 if len(sells) > 0 else 0
-            print(f"Total Trades:    {len(trades_df)}")
-            print(f"Win Rate:        {win_rate:.1f}%")
-            print(f"Avg P&L/Trade:   ${sells['P&L CLP'].mean():,.0f} CLP")
-            trades_df.to_csv(BACKTEST_TRADES_FILE, index=False)
-        
-        # Save equity curve for UI
-        pd.DataFrame(self.equity_curve).to_csv(BACKTEST_RESULTS_FILE, index=False)
-        print(f"\n✅ Results saved to {BACKTEST_RESULTS_FILE} and {BACKTEST_TRADES_FILE}")
+        # Load features
+        if not os.path.exists(PROCESSED_FEATURES_FILE):
+            logger.info("Generating features for backtest...")
+            watchlist = get_training_watchlist(include_global=True)
+            raw_df, macros = download_historical_data(watchlist, years=10)
+            if raw_df is None:
+                logger.error("Failed to download data for backtest.")
+                return None
+            generate_features(raw_df, macros)
+
+        df = pd.read_csv(PROCESSED_FEATURES_FILE)
+        df['Date'] = pd.to_datetime(df['Date'])
+        df = df.sort_values('Date')
+
+        # Define backtest window
+        end_date = df['Date'].max()
+        start_date = end_date - timedelta(days=self.backtest_months * 30)
+        logger.info(f"📊 Backtest: {start_date.date()} → {end_date.date()} ({self.backtest_months} months)")
+
+        # Filter to backtest window
+        bt_df = df[df['Date'] >= start_date].copy()
+        dates = sorted(bt_df['Date'].unique())
+
+        # Portfolio state
+        cash = self.initial_capital
+        positions = {}  # ticker -> {qty, entry_price, entry_date, peak, hold_target}
+        trade_log = []
+        equity_curve = []
+
+        # Track IPSA benchmark
+        ipsa_start = None
+        ipsa_col = 'Macro_IPSA' if 'Macro_IPSA' in bt_df.columns else None
+
+        for date in dates:
+            day_data = bt_df[bt_df['Date'] == date]
+            tickers_today = day_data['Ticker'].unique()
+
+            # Track IPSA
+            if ipsa_col and ipsa_start is None:
+                row0 = day_data.iloc[0]
+                val = row0.get(ipsa_col, 0)
+                if pd.notna(val) and float(val) > 0:
+                    ipsa_start = float(val)
+
+            # Check exits for existing positions
+            for ticker in list(positions.keys()):
+                pos = positions[ticker]
+                ticker_row = day_data[day_data['Ticker'] == ticker]
+
+                if ticker_row.empty:
+                    continue
+
+                current_price = float(ticker_row['Close'].iloc[0])
+                entry_price = pos['entry_price']
+                days_held = (date - pos['entry_date']).days
+                pnl_pct = (current_price - entry_price) / entry_price
+                pos['peak'] = max(pos['peak'], current_price)
+                drop_from_peak = (current_price - pos['peak']) / pos['peak']
+                hold_target = pos.get('hold_target', 10)
+
+                sell_reason = None
+
+                # Take profit
+                if pnl_pct >= self.take_profit_pct:
+                    sell_reason = f"Take Profit +{pnl_pct:.1%}"
+
+                # Hold period expired
+                elif days_held >= hold_target:
+                    sell_reason = f"Hold period expired ({days_held}d >= {hold_target}d), P&L={pnl_pct:.1%}"
+
+                # Trailing stop (only after min hold)
+                elif days_held >= self.min_hold_days and drop_from_peak <= -self.trailing_stop_pct:
+                    # Protection window: first half of hold target
+                    protection_days = max(self.min_hold_days, hold_target // 2)
+                    if days_held >= protection_days:
+                        sell_reason = f"Trailing stop {drop_from_peak:.1%} from peak after {days_held}d"
+
+                if sell_reason:
+                    proceeds = pos['qty'] * current_price
+                    cash += proceeds
+                    pnl = (current_price - entry_price) * pos['qty']
+                    trade_log.append({
+                        'date': date,
+                        'ticker': ticker,
+                        'action': 'SELL',
+                        'price': current_price,
+                        'qty': pos['qty'],
+                        'pnl': pnl,
+                        'pnl_pct': pnl_pct,
+                        'days_held': days_held,
+                        'hold_target': hold_target,
+                        'reason': sell_reason,
+                    })
+                    del positions[ticker]
+
+            # Check entries
+            if len(positions) < self.max_positions and cash > 0:
+                candidates = []
+                for _, row in day_data.iterrows():
+                    ticker = row['Ticker']
+                    if ticker in positions:
+                        continue
+
+                    # Build feature dict for prediction
+                    feature_dict = {}
+                    for col in day_data.columns:
+                        if col not in ['Date', 'Ticker', 'Open', 'High', 'Low', 'Close', 'Volume']:
+                            if not col.startswith('Target'):
+                                val = row.get(col, 0)
+                                feature_dict[col] = float(val) if pd.notna(val) else 0.0
+
+                    # Get V2 prediction
+                    if HAS_V2:
+                        pred = MultiHorizonPredictor.predict(feature_dict, context_score=feature_dict.get('Context_Score', 0))
+                        signal = pred.get('composite_signal', 'HOLD')
+                        prob = pred.get('best_probability', 0.0)
+                        hold_days = pred.get('suggested_hold_days', 10)
+                    else:
+                        prob = Predictor.predict_probability(feature_dict)
+                        signal = 'BUY' if prob >= self.buy_threshold else 'HOLD'
+                        hold_days = 5
+
+                    if signal == 'BUY' and prob >= self.buy_threshold:
+                        candidates.append({
+                            'ticker': ticker,
+                            'prob': prob,
+                            'hold_days': hold_days,
+                            'price': float(row['Close']),
+                        })
+
+                # Sort by probability, take best
+                candidates.sort(key=lambda x: x['prob'], reverse=True)
+                slots = self.max_positions - len(positions)
+
+                for cand in candidates[:slots]:
+                    if cash <= 0:
+                        break
+                    alloc = cash / (slots - len([c for c in candidates[:slots] if c['ticker'] in positions]))
+                    alloc = min(alloc, cash * 0.5)  # Max 50% per position
+                    qty = int(alloc / cand['price'])
+                    if qty <= 0:
+                        continue
+
+                    cost = qty * cand['price']
+                    if cost > cash:
+                        qty = int(cash / cand['price'])
+                        cost = qty * cand['price']
+                    if qty <= 0:
+                        continue
+
+                    cash -= cost
+                    positions[cand['ticker']] = {
+                        'qty': qty,
+                        'entry_price': cand['price'],
+                        'entry_date': date,
+                        'peak': cand['price'],
+                        'hold_target': cand['hold_days'],
+                    }
+                    trade_log.append({
+                        'date': date,
+                        'ticker': cand['ticker'],
+                        'action': 'BUY',
+                        'price': cand['price'],
+                        'qty': qty,
+                        'pnl': 0,
+                        'pnl_pct': 0,
+                        'days_held': 0,
+                        'hold_target': cand['hold_days'],
+                        'reason': f"V2 signal prob={cand['prob']:.2%}",
+                    })
+
+            # Record equity
+            invested = sum(
+                pos['qty'] * float(day_data[day_data['Ticker'] == tk]['Close'].iloc[0])
+                for tk, pos in positions.items()
+                if not day_data[day_data['Ticker'] == tk].empty
+            )
+            equity = cash + invested
+
+            ipsa_value = None
+            if ipsa_col:
+                row0 = day_data.iloc[0]
+                val = row0.get(ipsa_col, None)
+                if pd.notna(val) and ipsa_start and float(val) > 0:
+                    ipsa_value = (float(val) / ipsa_start - 1)
+
+            equity_curve.append({
+                'date': date,
+                'equity': equity,
+                'cash': cash,
+                'invested': invested,
+                'n_positions': len(positions),
+                'ipsa_return': ipsa_value,
+            })
+
+        # Generate report
+        report = self._generate_report(equity_curve, trade_log)
+        return report
+
+    def _generate_report(self, equity_curve: list, trade_log: list) -> dict:
+        """Generate comprehensive backtest report."""
+        if not equity_curve:
+            return {"status": "error", "reason": "no_data"}
+
+        ec_df = pd.DataFrame(equity_curve)
+        tl_df = pd.DataFrame(trade_log) if trade_log else pd.DataFrame()
+
+        initial = self.initial_capital
+        final = equity_curve[-1]['equity']
+        total_return = (final - initial) / initial
+
+        # Trade statistics
+        sells = tl_df[tl_df['action'] == 'SELL'] if not tl_df.empty else pd.DataFrame()
+        n_trades = len(sells)
+        n_wins = len(sells[sells['pnl'] > 0]) if not sells.empty else 0
+        n_losses = len(sells[sells['pnl'] <= 0]) if not sells.empty else 0
+        win_rate = n_wins / max(n_trades, 1)
+        avg_pnl_pct = float(sells['pnl_pct'].mean()) if not sells.empty else 0
+        avg_hold_days = float(sells['days_held'].mean()) if not sells.empty else 0
+
+        # Max drawdown
+        ec_df['peak_equity'] = ec_df['equity'].cummax()
+        ec_df['drawdown'] = (ec_df['equity'] - ec_df['peak_equity']) / ec_df['peak_equity']
+        max_drawdown = float(ec_df['drawdown'].min())
+
+        # IPSA comparison
+        ipsa_final_return = equity_curve[-1].get('ipsa_return', 0.0) or 0.0
+
+        report = {
+            "status": "ok",
+            "period": f"{equity_curve[0]['date']} to {equity_curve[-1]['date']}",
+            "initial_capital": initial,
+            "final_equity": final,
+            "total_return": total_return,
+            "total_trades": n_trades,
+            "win_rate": win_rate,
+            "wins": n_wins,
+            "losses": n_losses,
+            "avg_pnl_pct": avg_pnl_pct,
+            "avg_holding_days": avg_hold_days,
+            "max_drawdown": max_drawdown,
+            "ipsa_return": ipsa_final_return,
+            "alpha_vs_ipsa": total_return - ipsa_final_return,
+            "model_version": "V2" if HAS_V2 else "V1",
+        }
+
+        # Save results
+        tl_df.to_csv(BACKTEST_RESULTS_FILE, index=False)
+        logger.info(f"📄 Trade log saved to {BACKTEST_RESULTS_FILE}")
+
+        # Print report
+        print(f"\n{'='*60}")
+        print(f"📊 AUREUS BACKTEST REPORT ({'V2 Multi-Horizon' if HAS_V2 else 'V1 Legacy'})")
+        print(f"{'='*60}")
+        print(f"Period:           {report['period']}")
+        print(f"Capital Inicial:  ${initial:,.0f} CLP")
+        print(f"Equity Final:     ${final:,.0f} CLP")
+        print(f"Retorno Total:    {total_return:.2%}")
+        print(f"IPSA Benchmark:   {ipsa_final_return:.2%}")
+        print(f"Alpha vs IPSA:    {report['alpha_vs_ipsa']:.2%}")
+        print(f"{'─'*40}")
+        print(f"Trades Totales:   {n_trades}")
+        print(f"Win Rate:         {win_rate:.1%}")
+        print(f"P&L Promedio:     {avg_pnl_pct:.2%}")
+        print(f"Hold Promedio:    {avg_hold_days:.1f} days")
+        print(f"Max Drawdown:     {max_drawdown:.2%}")
+        print(f"{'='*60}\n")
+
+        return report
+
 
 if __name__ == "__main__":
-    if not os.path.exists(MODEL_FILE):
-        print(f"❌ Trained model not found. Backtest requires {MODEL_FILE}")
+    engine = BacktestEngine()
+    result = engine.run()
+    if result and result.get("status") == "ok":
+        print("✅ Backtest completed successfully.")
     else:
-        engine = BacktestEngine()
-        engine.run()
+        print("❌ Backtest failed.")

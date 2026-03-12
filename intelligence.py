@@ -12,6 +12,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
 
 from models import Predictor
+try:
+    from models_v2 import MultiHorizonPredictor
+    HAS_V2 = MultiHorizonPredictor.is_available()
+except ImportError:
+    HAS_V2 = False
 from context_service import ContextService
 
 MACRO_RETURN_MAP = {
@@ -65,6 +70,10 @@ class UnifiedAnalysis(BaseModel):
     signal: Literal["BUY", "HOLD", "SELL"] = "HOLD"
     strategy_used: str = "Standard Momentum"
     reasoning: str = "Awaiting full analysis."
+    # V2 Multi-Horizon fields
+    suggested_hold_days: int = 10
+    best_horizon: str = ""
+    exit_category: str = "medium"
 
 class BulkUnifiedAnalysis(BaseModel):
     results: Dict[str, UnifiedAnalysis] = Field(default_factory=dict)
@@ -422,12 +431,26 @@ class IntelligenceLayer:
             except:
                 macro_rets[f"Macro_{name}_Ret"] = 0.0
 
-        # 2. Get multi-objective ML outputs for this ticker using context
+        # 2. Get ML outputs — V2 multi-horizon preferred, V1 fallback
         full_tech = {**tech, **macro_rets}
-        ml_outputs = Predictor.predict_multi_objective(full_tech, context_score=context_score)
-        ml_prob = float(ml_outputs.get("probability", 0.5))
-        exp_ret_3d = float(ml_outputs.get("expected_return_3d", 0.0))
-        exp_horizon_days = int(ml_outputs.get("horizon_days", 3))
+        v2_result = None
+        if HAS_V2:
+            try:
+                v2_result = MultiHorizonPredictor.predict(full_tech, context_score=context_score)
+            except Exception:
+                v2_result = None
+
+        if v2_result and v2_result.get("best_horizon"):
+            ml_prob = float(v2_result.get("best_probability", 0.5))
+            best_h = v2_result.get("best_horizon", "10d")
+            exp_ret_3d = float(v2_result.get("horizons", {}).get(best_h, {}).get("expected_return", 0.0))
+            exp_horizon_days = int(v2_result.get("suggested_hold_days", 10))
+        else:
+            ml_outputs = Predictor.predict_multi_objective(full_tech, context_score=context_score)
+            ml_prob = float(ml_outputs.get("probability", 0.5))
+            exp_ret_3d = float(ml_outputs.get("expected_return_3d", 0.0))
+            exp_horizon_days = int(ml_outputs.get("horizon_days", 3))
+
         explain = Predictor.explain_prediction(full_tech, context_score=context_score, top_n=3)
         driver_trace = self._format_driver_trace(explain.get("top_drivers", []))
         
@@ -475,10 +498,16 @@ JSON:"""
         analysis = self._invoke_with_backoff(prompt, UnifiedAnalysis)
         # Ensure ml_confidence is persisted
         analysis.ml_confidence = ml_prob
+        # V2: attach horizon info
+        if v2_result and v2_result.get("best_horizon"):
+            analysis.suggested_hold_days = int(v2_result.get("suggested_hold_days", 10))
+            analysis.best_horizon = str(v2_result.get("best_horizon", ""))
+            analysis.exit_category = str(v2_result.get("exit_category", "medium"))
+
         explainability_method = explain.get("explainability_method", "heuristic")
         explain_tail = (
             f"ML explainability ({explainability_method}) | "
-            f"exp_ret_3d={exp_ret_3d:.2%} | horizon={exp_horizon_days}d | drivers={driver_trace}"
+            f"exp_ret={exp_ret_3d:.2%} | hold={exp_horizon_days}d | drivers={driver_trace}"
         )
         analysis.quant_reasoning = (analysis.quant_reasoning or "").strip()
         if analysis.quant_reasoning:
@@ -580,19 +609,38 @@ JSON:"""
             tech = data.get("technical_data", {})
             # Enrich tech with macro rets
             full_tech = {**tech, **macro_rets}
-            ml_outputs = Predictor.predict_multi_objective(full_tech, context_score=context_score)
-            ml_prob = float(ml_outputs.get("probability", 0.5))
+            # V2 multi-horizon or V1 fallback
+            v2_res = None
+            if HAS_V2:
+                try:
+                    v2_res = MultiHorizonPredictor.predict(full_tech, context_score=context_score)
+                except Exception:
+                    v2_res = None
+
+            if v2_res and v2_res.get("best_horizon"):
+                ml_prob = float(v2_res.get("best_probability", 0.5))
+                best_h = v2_res.get("best_horizon", "10d")
+                exp_ret = float(v2_res.get("horizons", {}).get(best_h, {}).get("expected_return", 0.0))
+                exp_horizon = int(v2_res.get("suggested_hold_days", 10))
+            else:
+                ml_outputs = Predictor.predict_multi_objective(full_tech, context_score=context_score)
+                ml_prob = float(ml_outputs.get("probability", 0.5))
+                exp_ret = float(ml_outputs.get("expected_return_3d", 0.0))
+                exp_horizon = int(ml_outputs.get("horizon_days", 3))
+
             explain = Predictor.explain_prediction(full_tech, context_score=context_score, top_n=3)
             top_drivers = explain.get("top_drivers", [])
             batch_context.append({
                 "ticker": ticker,
                 "tech": self._compact_tech_for_llm(tech),
                 "ml_prob": ml_prob,
-                "ml_expected_return_3d": float(ml_outputs.get("expected_return_3d", 0.0)),
-                "ml_expected_horizon_days": int(ml_outputs.get("horizon_days", 3)),
+                "ml_expected_return_3d": exp_ret,
+                "ml_expected_horizon_days": exp_horizon,
+                "v2_hold_days": int(v2_res.get("suggested_hold_days", 10)) if v2_res else 0,
+                "v2_exit_category": str(v2_res.get("exit_category", "")) if v2_res else "",
                 "explainability_method": explain.get("explainability_method", "heuristic"),
                 "drivers": top_drivers,
-                "news": (data.get("news_text", "") or "")[: self.max_news_chars]
+                "news": (data.get("news_text", "") or "")[:self.max_news_chars]
             })
 
         # Keep LLM budget bounded: send only highest-priority names to LLM,

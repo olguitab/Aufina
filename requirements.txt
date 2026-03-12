@@ -20,3 +20,6 @@ streamlit-autorefresh
 watchdog
 xgboost
 yfinance
+optuna
+catboost
+joblib

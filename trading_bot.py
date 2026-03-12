@@ -26,6 +26,12 @@ from regime_detector import RegimeDetector
 from database import TradingDB
 from broker_interface import PaperBrokerAdapter, ManualRealBrokerAdapter
 
+try:
+    from models_v2 import MultiHorizonPredictor
+    HAS_V2_MODEL = MultiHorizonPredictor.is_available()
+except ImportError:
+    HAS_V2_MODEL = False
+
 # --- Setup Logging ---
 ensure_project_dirs()
 logging.basicConfig(
@@ -120,9 +126,12 @@ class AutonomousBot:
         self.regime_detector = RegimeDetector()
         # Trailing Stop: tracks the highest price seen since entry for each position
         self._price_peaks: dict = {}          # {ticker: highest_price_seen}
-        self.TRAILING_STOP_PCT = 0.03         # Sell if price drops 3% from peak (more aggressive)
-        self.TAKE_PROFIT_PCT = 0.08           # Take-profit at +8% (realistic gains)
-        self.MIN_HOLD_CYCLES = 1              # Hold at least 1 cycle before considering sell (more dynamic)
+        self._entry_timestamps: dict = {}     # {ticker: datetime of entry}
+        self._hold_targets: dict = {}         # {ticker: suggested_hold_days from V2}
+        self.TRAILING_STOP_PCT = 0.05         # Sell if price drops 5% from peak (more patient for medium-term)
+        self.TAKE_PROFIT_PCT = 0.12           # Take-profit at +12% (medium-term target)
+        self.MIN_HOLD_DAYS = 1                # Minimum 1 day hold before considering any sell
+        self.HOLD_PROTECTION_RATIO = 0.5      # Don't sell during first 50% of suggested hold period
         self._last_buy_alerts: dict = {}
         self.telegram_alerts_enabled = True
         self.aggressive_mode = _env_flag("TRADING_AGGRESSIVE_MODE", default=False)  # Deploy max capital
@@ -631,16 +640,19 @@ class AutonomousBot:
 
     def _update_trailing_stops(self, ticker_data: dict):
         """
-        Dual-Confirmation Sell System (Maximiza Ganancias):
+        V2 Horizon-Aware Sell System (Medium-Term Optimized):
         
-        REGLA 1 — Take Profit Duro (+15%): Vende SIEMPRE de inmediato. Ganancia excepcional asegurada.
+        RULE 0 — Hold Protection: If V2 model suggests holding N days, do NOT
+                 trigger trailing stops during the first N/2 days (protection window).
+                 This lets the model's medium-term prediction play out.
         
-        REGLA 2 — Trailing Stop Inteligente (-5% desde pico):
-          - Detecta la posible reversión por precio.
-          - PERO consulta al modelo ML institucional (entrenado 17h).
-          - Si ML dice probabilidad > 45%: Espera. Puede ser ruido. No vende.
-          - Si ML dice probabilidad < 45%: Confirma debilidad. VENDE.
-          - Así evitamos salir de una acción que aún tiene momentum real.
+        RULE 1 — Take Profit (+12%): Sell ALWAYS. Lock in exceptional gains.
+        
+        RULE 2 — Smart Trailing Stop (-5% from peak + ML check):
+          - Only activated AFTER the protection window expires.
+          - Checks ML probability before executing.
+          - If ML says >55%: Hold. The model still sees upside.
+          - If ML says <55%: Confirm exit.
         """
         import sqlite3
 
@@ -657,44 +669,70 @@ class AutonomousBot:
             self._price_peaks[peak_key] = new_peak
             drop_from_peak = (current_price - new_peak) / new_peak
 
-            # --- REGLA 1: Hard Take-Profit (Lock in gains at +8%) ---
-            if pnl_pct >= self.TAKE_PROFIT_PCT:
-                return ("SELL", current_price, f"🎯 Take Profit: +{pnl_pct:.1%} — Ganancia asegurada")
+            # V2: Hold protection — calculate days held
+            entry_ts = self._entry_timestamps.get(f"{portfolio_label}_{ticker}")
+            suggested_hold = self._hold_targets.get(f"{portfolio_label}_{ticker}", 5)
+            days_held = 0
+            if entry_ts:
+                days_held = (datetime.utcnow() - entry_ts).days
+            
+            # Protection window: first N/2 days of suggested hold period
+            protection_days = max(self.MIN_HOLD_DAYS, int(suggested_hold * self.HOLD_PROTECTION_RATIO))
+            in_protection = days_held < protection_days
 
-            # --- REGLA 2: Aggressive Trailing Stop ---
-            # If price drops 3%+ from peak, evaluate exit
+            # --- RULE 1: Hard Take-Profit (Lock in gains) ---
+            if pnl_pct >= self.TAKE_PROFIT_PCT:
+                return ("SELL", current_price, f"🎯 Take Profit: +{pnl_pct:.1%} — Ganancia asegurada (held {days_held}d)")
+
+            # --- RULE 0: Hold Protection Window ---
+            if in_protection:
+                logger.info(
+                    f"[{portfolio_label}] {ticker}: P&L {pnl_pct:.1%} | "
+                    f"Day {days_held}/{suggested_hold} — IN PROTECTION ({protection_days}d window). HOLD."
+                )
+                return None
+
+            # --- RULE 2: Smart Trailing Stop (post-protection) ---
             if new_peak > avg_cost and drop_from_peak <= -self.TRAILING_STOP_PCT:
                 tech = ticker_data_entry.get("technical_data", {})
-                ml_prob = Predictor.predict_probability(tech)
+
+                # V2 multi-horizon probability check
+                if HAS_V2_MODEL:
+                    try:
+                        v2_pred = MultiHorizonPredictor.predict(tech)
+                        ml_prob = v2_pred.get("best_probability", 0.5)
+                    except Exception:
+                        ml_prob = Predictor.predict_probability(tech)
+                else:
+                    ml_prob = Predictor.predict_probability(tech)
                 
-                # If we're in a loss AND trailing stop triggered, SELL (cut losses quickly)
+                # If we're in a loss AND trailing stop triggered, SELL (cut losses)
                 if pnl_pct < 0:
                     reason = (
                         f"📉 Trailing Stop (LOSS): Cayó {drop_from_peak:.1%} desde pico "
-                        f"+ Pérdida acumulada {pnl_pct:.1%} → SALIR."
+                        f"+ Pérdida acumulada {pnl_pct:.1%} → SALIR. (held {days_held}d)"
                     )
                     return ("SELL", current_price, reason)
                 
                 # If we have a gain but price is falling, check ML confidence
-                # More permissive: only hold if ML is quite bullish (>55%)
                 if ml_prob >= 0.55:
                     logger.info(
                         f"[{portfolio_label}] {ticker}: Trailing activado pero ML={ml_prob:.1%} (≥55%) → MANTENIENDO. "
-                        f"Tendencia alcista confirmada. P&L: {pnl_pct:.1%}"
+                        f"Tendencia alcista confirmada. P&L: {pnl_pct:.1%} (day {days_held})"
                     )
                     return None
                 else:
-                    # ML is not strongly bullish, exit the position
                     reason = (
                         f"📉 Trailing Stop: Cayó {drop_from_peak:.1%} desde pico "
                         f"+ ML prob={ml_prob:.1%} (débil). "
-                        f"Ganancia neta: {pnl_pct:.1%}"
+                        f"Ganancia neta: {pnl_pct:.1%} (held {days_held}d)"
                     )
                     return ("SELL", current_price, reason)
 
             logger.info(
                 f"[{portfolio_label}] {ticker}: P&L {pnl_pct:.1%} | "
-                f"Peak: ${new_peak:.2f} | Drop: {drop_from_peak:.1%} → HOLD (en tendencia)"
+                f"Peak: ${new_peak:.2f} | Drop: {drop_from_peak:.1%} | "
+                f"Day {days_held}/{suggested_hold} → HOLD"
             )
             return None
 
@@ -948,6 +986,13 @@ class AutonomousBot:
                     confidence=confidence,
                     aggressive=self.aggressive_mode,
                 )
+                # V2: Track entry time and hold target for horizon-aware sell system
+                paper_key = f"PAPER_{ticker}"
+                if self.paper_portfolio.positions.get(ticker, 0) > 0 and paper_key not in self._entry_timestamps:
+                    self._entry_timestamps[paper_key] = datetime.utcnow()
+                    suggested_hold = getattr(analysis, 'suggested_hold_days', 10)
+                    self._hold_targets[paper_key] = suggested_hold
+                    logger.info(f"[PAPER] Entry tracked for {ticker}: hold target = {suggested_hold}d")
             elif analysis.signal == "SELL":
                 self._execute_paper_signal(
                     ticker=ticker,

@@ -13,6 +13,8 @@ BACKTEST_TRADES_FILE = os.path.join(DATA_DIR, "backtest_trades.csv")
 BACKTEST_RESULTS_FILE = os.path.join(DATA_DIR, "backtest_results.csv")
 
 MODEL_FILE = os.path.join(ARTIFACTS_DIR, "predictive_model.pkl")
+MODEL_V2_FILE = os.path.join(ARTIFACTS_DIR, "predictive_model_v2.pkl")
+TRAINING_REPORT_V2_FILE = os.path.join(DATA_DIR, "training_report_v2.json")
 
 TRADING_DB_FILE = os.path.join(STORAGE_DIR, "trading_vault.db")
 PAPER_TRADING_DB_FILE = os.path.join(STORAGE_DIR, "paper_trading_vault.db")
