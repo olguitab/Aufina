@@ -8,6 +8,7 @@ __pycache__/
 logs/*.log
 storage/*.db
 artifacts/*.pkl
+!artifacts/predictive_model_v2.pkl
 data/processed_features.csv
 
 .pytest_cache/

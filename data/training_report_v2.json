@@ -1,0 +1,155 @@
+{
+  "schema_version": 3,
+  "trained_at": "2026-03-12T20:48:01.756469+00:00",
+  "samples": 54561,
+  "n_features": 51,
+  "feature_cols": [
+    "Return_1d",
+    "Return_5d",
+    "Return_10d",
+    "Return_20d",
+    "Return_40d",
+    "Return_60d",
+    "Dist_MA20",
+    "Dist_MA50",
+    "Dist_MA200",
+    "MA20_MA50_Cross",
+    "Dist_52w_High",
+    "Dist_52w_Low",
+    "Volatility_20d",
+    "Volatility_5d",
+    "Vol_Compression",
+    "ATR_Ratio",
+    "RSI_14",
+    "StochRSI",
+    "WilliamsR",
+    "ADX_14",
+    "MACD",
+    "MACD_Signal",
+    "MACD_Hist",
+    "BB_Width",
+    "BB_Position",
+    "OBV",
+    "OBV_MA20",
+    "OBV_ROC",
+    "Volume_Ratio",
+    "Macro_Copper_Ret",
+    "Macro_SP500_Ret",
+    "Macro_USDCLP_Ret",
+    "Macro_Lithium_Ret",
+    "Macro_MSCI_EM_Ret",
+    "Macro_VIX_Ret",
+    "Macro_WTI_Oil_Ret",
+    "Macro_DXY_Ret",
+    "Macro_IronOre_Ret",
+    "Macro_IPSA_Ret",
+    "Macro_Gold_Ret",
+    "Copper_Rolling_Corr_30d",
+    "WTI_Oil_Corr_20d",
+    "Gold_Corr_20d",
+    "DXY_Corr_20d",
+    "IronOre_Corr_20d",
+    "IPSA_Corr_20d",
+    "DayOfWeek",
+    "MonthOfYear",
+    "IsMonday",
+    "IsFriday",
+    "Context_Score"
+  ],
+  "horizons": {
+    "5d": {
+      "samples": 54561,
+      "positives": 14352,
+      "negatives": 40209,
+      "threshold": 0.2,
+      "calibration": {
+        "threshold": 0.2,
+        "precision": 0.26181048750340435,
+        "recall": 0.9999199871979517,
+        "f1": 0.4149690358785343
+      },
+      "optuna_best": {
+        "model_type": "lgbm",
+        "n_estimators": 200,
+        "max_depth": 4,
+        "learning_rate": 0.028807939310838335,
+        "subsample": 0.7533336012655122,
+        "colsample_bytree": 0.9761744728041905,
+        "min_child_samples": 21,
+        "reg_alpha": 0.1709944827336702,
+        "reg_lambda": 4.217008964077634
+      },
+      "classification_report": "              precision    recall  f1-score   support\n\n           0       0.00      0.00      0.00     40209\n           1       0.26      1.00      0.42     14352\n\n    accuracy                           0.26     54561\n   macro avg       0.13      0.50      0.21     54561\nweighted avg       0.07      0.26      0.11     54561\n"
+    },
+    "10d": {
+      "samples": 54561,
+      "positives": 14792,
+      "negatives": 39769,
+      "threshold": 0.2,
+      "calibration": {
+        "threshold": 0.2,
+        "precision": 0.26828399639662287,
+        "recall": 0.999843847595253,
+        "f1": 0.4230521464792455
+      },
+      "optuna_best": {
+        "model_type": "xgb",
+        "n_estimators": 350,
+        "max_depth": 7,
+        "learning_rate": 0.019265056952325253,
+        "subsample": 0.9938471289042586,
+        "colsample_bytree": 0.7387271650333527,
+        "min_child_weight": 3,
+        "reg_alpha": 0.022564869223546294,
+        "reg_lambda": 0.18524871968517598
+      },
+      "classification_report": "              precision    recall  f1-score   support\n\n           0       0.00      0.00      0.00     39769\n           1       0.27      1.00      0.43     14792\n\n    accuracy                           0.27     54561\n   macro avg       0.14      0.50      0.21     54561\nweighted avg       0.07      0.27      0.12     54561\n"
+    },
+    "20d": {
+      "samples": 54561,
+      "positives": 13995,
+      "negatives": 40566,
+      "threshold": 0.2,
+      "calibration": {
+        "threshold": 0.2,
+        "precision": 0.2502223351543641,
+        "recall": 0.9802571547075902,
+        "f1": 0.39867748519761814
+      },
+      "optuna_best": {
+        "model_type": "lgbm",
+        "n_estimators": 250,
+        "max_depth": 3,
+        "learning_rate": 0.05157486330391136,
+        "subsample": 0.905506909162834,
+        "colsample_bytree": 0.8341908360039516,
+        "min_child_samples": 32,
+        "reg_alpha": 0.001974990327651706,
+        "reg_lambda": 1.9009597950567758
+      },
+      "classification_report": "              precision    recall  f1-score   support\n\n           0       0.00      0.00      0.00     40566\n           1       0.26      1.00      0.41     13995\n\n    accuracy                           0.26     54561\n   macro avg       0.13      0.50      0.20     54561\nweighted avg       0.07      0.26      0.10     54561\n"
+    }
+  },
+  "exit_model": {
+    "samples": 54561,
+    "classes": [
+      0,
+      1,
+      2
+    ],
+    "class_names": {
+      "0": "short (1-5d)",
+      "1": "medium (6-12d)",
+      "2": "long (13-20d)"
+    }
+  },
+  "walk_forward": {
+    "20d": {
+      "f1_mean": 0.3904582243010509,
+      "precision_mean": 0.25074641456176455,
+      "recall_mean": 0.9234086628778931,
+      "accuracy_mean": 0.2735042735042735,
+      "folds": 7
+    }
+  }
+}
