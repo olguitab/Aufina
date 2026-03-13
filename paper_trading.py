@@ -278,7 +278,7 @@ class PaperPortfolio:
             if qty > 0:
                 try:
                     data = market_data_engine.get_comprehensive_data(ticker)
-                    price = data.get("current_price", 0) or data.get("close_price", 0)
+                    price = data.get("current_price", 0.0) or data.get("close_price", 0.0)
                     if price and price > 0:
                         total += qty * price
                     else:

@@ -106,8 +106,27 @@ class MarketData:
                         current = close.iloc[-1]
                         prev_close = close.iloc[-2]
             else:
+                # During market hours, try to get a more real-time price than the last history row
                 current = close.iloc[-1]
                 prev_close = close.iloc[-2]
+                
+                # If market is open, try fast_info/info for a lower-latency quote
+                if MarketData.is_santiago_market_open():
+                    try:
+                        fast_info = getattr(stock, "fast_info", None)
+                        if fast_info:
+                            ltp = float(fast_info.get("lastPrice") or 0)
+                            if ltp > 0:
+                                current = ltp
+                        else:
+                            # info is slower but more thorough
+                            info = getattr(stock, "info", None)
+                            if info:
+                                ltp = float(info.get("currentPrice") or info.get("regularMarketPrice") or 0)
+                                if ltp > 0:
+                                    current = ltp
+                    except Exception:
+                        pass
             
             # --- Technical Indicators ---
             ma20 = close.rolling(window=20).mean().iloc[-1]
@@ -209,6 +228,7 @@ class MarketData:
             return {
                 "is_active": is_active,
                 "current_price": current,
+                "close_price": current, # for consistent access in UI
                 "technical_data": {
                     "CurrentPrice": current,
                     "MA20": ma20,
@@ -263,6 +283,7 @@ class MarketData:
                 return {
                     "is_active": True,
                     "current_price": fallback_price,
+                    "close_price": fallback_price,
                     "technical_data": {
                         "CurrentPrice": fallback_price,
                         "MA20": fallback_price,

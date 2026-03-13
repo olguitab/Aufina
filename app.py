@@ -189,6 +189,19 @@ for ticker, qty in active_positions.items():
 delta_value = total_value - initial
 delta_pct = (delta_value / initial) * 100 if initial else 0
 
+# Store per-ticker P&L for display
+ticker_pnl = {}
+for ticker, qty in active_positions.items():
+    data = latest_ticker_data.get(ticker, {})
+    px_now = data.get("current_price", 0.0) or paper.position_costs.get(ticker, 0.0)
+    cost = paper.position_costs.get(ticker, 0.0)
+    if cost > 0:
+        pnl = (px_now - cost) * qty
+        pnl_pct = ((px_now - cost) / cost) * 100
+        ticker_pnl[ticker] = {"pnl": pnl, "pct": pnl_pct, "current": px_now, "cost": cost}
+    else:
+        ticker_pnl[ticker] = {"pnl": 0, "pct": 0, "current": px_now, "cost": 0}
+
 
 ticker_prices = {
     tk: (portfolio_distribution.get(tk, 0.0) / qty) if qty > 0 else 0.0
@@ -284,7 +297,21 @@ if page == "Portafolio":
         st.subheader("Posiciones")
         if active_positions:
             for tk, qty in active_positions.items():
-                st.write(f"**{tk}** · {qty:.0f}")
+                pnl_data = ticker_pnl.get(tk, {})
+                pnl_val = pnl_data.get("pnl", 0)
+                pnl_pct = pnl_data.get("pct", 0)
+                px_now = pnl_data.get("current", 0)
+                
+                color = "green" if pnl_val >= 0 else "red"
+                sign = "+" if pnl_val >= 0 else ""
+                
+                st.markdown(f"**{tk}** · {qty:.0f} acc")
+                st.markdown(
+                    f"<div style='font-size: 0.9em; color: gray;'>Precio: ${px_now:,.0f} | "
+                    f"<span style='color: {color}; font-weight: bold;'>{sign}${pnl_val:,.0f} ({sign}{pnl_pct:.2f}%)</span></div>",
+                    unsafe_allow_html=True
+                )
+                st.write("")
         else:
             st.caption("No hay posiciones abiertas")
 
