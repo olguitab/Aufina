@@ -97,16 +97,15 @@ LLM_BATCH_SIZE = max(1, _env_int("LLM_BATCH_SIZE", local_default=6, hosted_defau
 MARKET_DATA_MAX_WORKERS = max(1, _env_int("MARKET_DATA_MAX_WORKERS", local_default=4, hosted_default=3))
 
 def send_telegram(message: str, chat_id_override: str = None):
-    # token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    # chat_id = chat_id_override or os.environ.get("TELEGRAM_CHAT_ID")
-    # if not token or not chat_id:
-    #     return
-    # try:
-    #     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    #     http_requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
-    # except Exception as e:
-    #     logger.error(f"Telegram notification failed: {e}")
-    # Bloqueado envío a Telegram por mantenimiento.
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = chat_id_override or os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        http_requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
+    except Exception as e:
+        logger.error(f"Telegram notification failed: {e}")
     return None
 
 class AutonomousBot:
@@ -434,6 +433,21 @@ class AutonomousBot:
             confidence=confidence,
         )
 
+        # Notify via Telegram for Demo actions
+        try:
+            sign_text = "🟢 COMPRA" if signal == "BUY" else "🔴 VENTA"
+            emoji = "🚀" if signal == "BUY" else "💸"
+            msg = (
+                f"{emoji} *AUREUS DEMO (10MM)*\n"
+                f"Acción: *{sign_text} {ticker}*\n"
+                f"Precio: *${price:,.2f} CLP*\n"
+                f"Razón: {reasoning}\n"
+                f"Confianza: {confidence:.1%}"
+            )
+            send_telegram(msg)
+        except Exception as e:
+            logger.error(f"Failed to send Telegram alert for paper signal: {e}")
+
     def _get_buy_recommendation_message(self, capital: float) -> str:
         """Builds a BUY allocation plan based on latest market scan and AI signals."""
         try:
@@ -541,31 +555,31 @@ class AutonomousBot:
                             from database import TradingDB
                             self.portfolio.balance = new_cap
                             TradingDB.save_state(new_cap)
-                            # send_telegram(
-                            #     f"✅ Capital de la cuenta real actualizado a ${new_cap:,.0f} CLP.\n"
-                            #     f"⏳ Calculando plan de compra sugerido...",
-                            #     str(chat_id)
-                            # )  # Bloqueado envío a Telegram
+                            send_telegram(
+                                f"✅ Capital de la cuenta real actualizado a ${new_cap:,.0f} CLP.\n"
+                                f"⏳ Calculando plan de compra sugerido...",
+                                str(chat_id)
+                            )
                             recommendation_msg = self._get_buy_recommendation_message(new_cap)
-                            # send_telegram(recommendation_msg, str(chat_id))  # Bloqueado envío a Telegram
+                            send_telegram(recommendation_msg, str(chat_id))
                         except ValueError:
-                            # send_telegram("❌ Error: Formato incorrecto. Usa: `/capital 5000000`", str(chat_id))  # Bloqueado envío a Telegram
+                            send_telegram("❌ Error: Formato incorrecto. Usa: `/capital 5000000`", str(chat_id))
                             pass
 
                 elif cmd == "/stop":
                     self.telegram_alerts_enabled = False
-                    # send_telegram(
-                    #     "⏸️ Notificaciones automáticas pausadas.\n"
-                    #     "Usa `/start` para reanudarlas.",
-                    #     str(chat_id)
-                    # )  # Bloqueado envío a Telegram
+                    send_telegram(
+                        "⏸️ Notificaciones automáticas pausadas.\n"
+                        "Usa `/start` para reanudarlas.",
+                        str(chat_id)
+                    )
 
                 elif cmd == "/start":
                     self.telegram_alerts_enabled = True
-                    # send_telegram(
-                    #     "▶️ Notificaciones automáticas reactivadas.",
-                    #     str(chat_id)
-                    # )  # Bloqueado envío a Telegram
+                    send_telegram(
+                        "▶️ Notificaciones automáticas reactivadas.",
+                        str(chat_id)
+                    )
                 
                 elif cmd == "/comprar":
                     if len(parts) >= 4:
@@ -575,20 +589,18 @@ class AutonomousBot:
                             price = float(parts[3])
                             ok, detail = self.portfolio.manual_entry(ticker, qty, price)
                             if ok:
-                                # send_telegram(
-                                #     f"✅ Compra confirmada: {qty}x {ticker} a ${price:,.0f}.\n"
-                                #     f"💼 Capital libre actualizado: ${self.portfolio.balance:,.0f} CLP.",
-                                #     str(chat_id)
-                                # )  # Bloqueado envío a Telegram
-                                pass
+                                send_telegram(
+                                    f"✅ Compra confirmada: {qty}x {ticker} a ${price:,.0f}.\n"
+                                    f"💼 Capital libre actualizado: ${self.portfolio.balance:,.0f} CLP.",
+                                    str(chat_id)
+                                )
                             else:
-                                # send_telegram(f"❌ No se pudo registrar la compra: {detail}", str(chat_id))  # Bloqueado envío a Telegram
-                                pass
+                                send_telegram(f"❌ No se pudo registrar la compra: {detail}", str(chat_id))
                         except ValueError:
-                            # send_telegram("❌ Error: Cantidad o precio inválido.", str(chat_id))  # Bloqueado envío a Telegram
+                            send_telegram("❌ Error: Cantidad o precio inválido.", str(chat_id))
                             pass
                     else:
-                        # send_telegram("❌ Formato: `/comprar [TICKER] [CANTIDAD] [PRECIO]`", str(chat_id))  # Bloqueado envío a Telegram
+                        send_telegram("❌ Formato: `/comprar [TICKER] [CANTIDAD] [PRECIO]`", str(chat_id))
                         pass
                         
                 elif cmd == "/vender":
@@ -601,21 +613,17 @@ class AutonomousBot:
                             if ok:
                                 if self.portfolio.positions.get(ticker, 0) <= 0 and f"REAL_{ticker}" in self._price_peaks:
                                     del self._price_peaks[f"REAL_{ticker}"]
-                                # send_telegram(
-                                #     f"✅ Venta confirmada: {qty}x {ticker} a ${price:,.0f}.\n"
-                                #     f"💼 Capital libre actualizado: ${self.portfolio.balance:,.0f} CLP.",
-                                #     str(chat_id)
-                                # )  # Bloqueado envío a Telegram
-                                pass
+                                send_telegram(
+                                    f"✅ Venta confirmada: {qty}x {ticker} a ${price:,.0f}.\n"
+                                    f"💼 Capital libre actualizado: ${self.portfolio.balance:,.0f} CLP.",
+                                    str(chat_id)
+                                )
                             else:
-                                # send_telegram(f"❌ No se pudo registrar la venta: {detail}", str(chat_id))  # Bloqueado envío a Telegram
-                                pass
+                                send_telegram(f"❌ No se pudo registrar la venta: {detail}", str(chat_id))
                         except ValueError:
-                            # send_telegram("❌ Error: Cantidad o precio inválido.", str(chat_id))  # Bloqueado envío a Telegram
-                            pass
+                            send_telegram("❌ Error: Cantidad o precio inválido.", str(chat_id))
                     else:
-                        # send_telegram("❌ Formato: `/vender [TICKER] [CANTIDAD] [PRECIO]`", str(chat_id))  # Bloqueado envío a Telegram
-                        pass
+                        send_telegram("❌ Formato: `/vender [TICKER] [CANTIDAD] [PRECIO]`", str(chat_id))
                         
                 elif cmd == "/estado":
                     msg_txt = f"📊 *Estado Portafolio Real*\nCapital Libre: ${self.portfolio.balance:,.0f} CLP\n"
@@ -628,8 +636,7 @@ class AutonomousBot:
                             msg_txt += f"• {tk}: {q} acciones\n"
                     else:
                         msg_txt += "\n_Sin posiciones activas._"
-                    # send_telegram(msg_txt, str(chat_id))  # Bloqueado envío a Telegram
-                    pass
+                    send_telegram(msg_txt, str(chat_id))
         
         except Exception as e:
             logger.error(f"Error checking Telegram commands: {e}")
