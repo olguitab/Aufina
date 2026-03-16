@@ -16,3 +16,5 @@ data/processed_features.csv
 *.egg-info/
 dist/
 build/
+artifacts/predictive_model_v2.pkl
+*.pkl

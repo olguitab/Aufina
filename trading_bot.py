@@ -25,6 +25,7 @@ from he_analyzer import HEAnalyzer
 from regime_detector import RegimeDetector
 from database import TradingDB
 from broker_interface import PaperBrokerAdapter, ManualRealBrokerAdapter
+from order_engine import OrderEngine
 
 try:
     from models_v2 import MultiHorizonPredictor
@@ -123,6 +124,7 @@ class AutonomousBot:
         self.afp_tracker = AFPTracker()
         self.he_analyzer = HEAnalyzer()
         self.regime_detector = RegimeDetector()
+        self.order_engine = OrderEngine(portfolio_manager=self.portfolio)
         # Trailing Stop: tracks the highest price seen since entry for each position
         self._price_peaks: dict = {}          # {ticker: highest_price_seen}
         self._entry_timestamps: dict = {}     # {ticker: datetime of entry}
@@ -629,6 +631,11 @@ class AutonomousBot:
                     msg_txt = f"📊 *Estado Portafolio Real*\nCapital Libre: ${self.portfolio.balance:,.0f} CLP\n"
                     estado_notif = "🟢 Activas" if self.telegram_alerts_enabled else "⏸️ Pausadas"
                     msg_txt += f"Notificaciones automáticas: {estado_notif}\n"
+                    # Show reserved cash in pending offers
+                    pending_summary = self.order_engine.get_pending_summary()
+                    if pending_summary["pending_count"] > 0:
+                        msg_txt += f"📋 Ofertas pendientes: {pending_summary['pending_count']}\n"
+                        msg_txt += f"💰 Cash reservado: ${pending_summary['reserved_cash_clp']:,.0f} CLP\n"
                     active = {k: v for k, v in self.portfolio.positions.items() if v > 0}
                     if active:
                         msg_txt += "\n*Posiciones Activas:*\n"
@@ -637,6 +644,98 @@ class AutonomousBot:
                     else:
                         msg_txt += "\n_Sin posiciones activas._"
                     send_telegram(msg_txt, str(chat_id))
+
+                elif cmd == "/ofertar":
+                    # /ofertar TICKER LADO PRECIO CANTIDAD
+                    if len(parts) >= 5:
+                        ticker = parts[1].upper()
+                        lado = parts[2].upper()
+                        if lado not in ("BUY", "SELL", "COMPRA", "VENTA"):
+                            send_telegram("❌ Lado debe ser BUY/SELL (o COMPRA/VENTA).", str(chat_id))
+                            continue
+                        side = "BUY" if lado in ("BUY", "COMPRA") else "SELL"
+                        try:
+                            precio = float(parts[3].replace(".", "").replace(",", ""))
+                            cantidad = int(float(parts[4]))
+                        except ValueError:
+                            send_telegram("❌ Precio o cantidad inválidos.", str(chat_id))
+                            continue
+                        # Get last trade price for validation
+                        try:
+                            data = self.market_data.get_comprehensive_data(ticker)
+                            last_price = float(data.get("current_price", 0) or 0)
+                        except Exception:
+                            last_price = precio
+                        ok, msg_result, order_id = self.order_engine.place_offer(
+                            ticker=ticker, side=side, price=precio,
+                            quantity=cantidad, reasoning=f"Oferta manual via Telegram",
+                            confidence=0.5, last_trade_price=last_price,
+                        )
+                        if ok:
+                            commission_clp, total_cost = OrderEngine.apply_commission(precio, cantidad, side)
+                            send_telegram(
+                                f"✅ *Oferta #{order_id} creada*\n"
+                                f"📌 {side} {ticker}\n"
+                                f"💰 Precio: ${precio:,.0f} x {cantidad} acc\n"
+                                f"📊 Comisión (0.14%): ${commission_clp:,.0f}\n"
+                                f"💵 Total: ${total_cost:,.0f}\n\n"
+                                f"⏳ Timeout: {self.order_engine.timeout_seconds // 60} min\n"
+                                f"👉 Cuando se acepte, confirma con `/confirmar {order_id}`",
+                                str(chat_id)
+                            )
+                        else:
+                            send_telegram(f"❌ {msg_result}", str(chat_id))
+                    else:
+                        send_telegram("❌ Formato: `/ofertar TICKER BUY|SELL PRECIO CANTIDAD`", str(chat_id))
+
+                elif cmd == "/confirmar":
+                    if len(parts) >= 2:
+                        try:
+                            order_id = int(parts[1])
+                        except ValueError:
+                            send_telegram("❌ ID de oferta inválido.", str(chat_id))
+                            continue
+                        ok, msg_result = self.order_engine.confirm_offer(order_id)
+                        send_telegram(msg_result, str(chat_id))
+                        if ok:
+                            send_telegram(
+                                f"💼 Capital libre actualizado: ${self.portfolio.balance:,.0f} CLP.",
+                                str(chat_id)
+                            )
+                    else:
+                        send_telegram("❌ Formato: `/confirmar ID`", str(chat_id))
+
+                elif cmd == "/cancelar":
+                    if len(parts) >= 2:
+                        try:
+                            order_id = int(parts[1])
+                        except ValueError:
+                            send_telegram("❌ ID de oferta inválido.", str(chat_id))
+                            continue
+                        ok, msg_result = self.order_engine.cancel_offer(order_id)
+                        send_telegram(msg_result, str(chat_id))
+                    else:
+                        send_telegram("❌ Formato: `/cancelar ID`", str(chat_id))
+
+                elif cmd == "/ofertas":
+                    summary = self.order_engine.get_pending_summary()
+                    if summary["pending_count"] == 0:
+                        send_telegram("📋 No hay ofertas pendientes.", str(chat_id))
+                    else:
+                        lines = [
+                            f"📋 *{summary['pending_count']} ofertas pendientes*",
+                            f"💰 Cash reservado: ${summary['reserved_cash_clp']:,.0f} CLP",
+                            ""
+                        ]
+                        for o in summary["orders"]:
+                            lines.append(
+                                f"• *#{o['id']}* {o['side']} {o['ticker']} "
+                                f"x{int(o['quantity'])} @ ${o['offer_price']:,.0f} "
+                                f"(total ${o['total_cost']:,.0f})"
+                            )
+                        lines.append("\n👉 `/confirmar ID` o `/cancelar ID`")
+                        send_telegram("\n".join(lines), str(chat_id))
+
         
         except Exception as e:
             logger.error(f"Error checking Telegram commands: {e}")
@@ -868,6 +967,16 @@ class AutonomousBot:
         self.paper_portfolio.sync_from_db()
         self._check_telegram_commands()
         market_regime = self.regime_detector.detect()
+
+        # Expire stale offers before evaluating new signals
+        expired_offers = self.order_engine.expire_stale_offers()
+        if expired_offers:
+            for exp in expired_offers:
+                self._send_automatic_telegram(
+                    f"⏰ *Oferta #{exp['id']} expirada* (sin respuesta)\n"
+                    f"{exp['side']} {exp['ticker']} x{int(exp['quantity'])} @ ${exp['offer_price']:,.0f}\n"
+                    f"💰 Capital liberado. Se buscará nueva oportunidad."
+                )
         
         # Snapshot global context once to avoid repeated LLM calls across chunks
         context_snapshot = self.intelligence.context_service.analyze_context()
@@ -1176,18 +1285,29 @@ class AutonomousBot:
                                f"⚖️ *Motivo de bloqueo:* {risk_reason}\n"
                                f"💡 *Señal IA:* {analysis.reasoning}")
                     else:
+                           # Calculate recommended offer price and quantity
+                           suggested_offer_price = self.order_engine.calculate_offer_price(
+                               side="BUY", current_price=price,
+                               last_trade_price=price, confidence=float(getattr(analysis, 'ml_confidence', 0.5) or 0.5),
+                           )
+                           commission_clp, total_cost_offer = OrderEngine.apply_commission(
+                               suggested_offer_price, suggested_shares, "BUY"
+                           )
                            msg = (f"{urgency_emoji} *ALERTA DE COMPRA* {urgency_emoji}\n"
                                f"📌 *Acción:* {ticker}\n"
-                               f"💰 *Precio Recomendado:* ${price:,.0f}\n"
+                               f"💰 *Precio Mercado:* ${price:,.0f}\n"
+                               f"📊 *Precio Oferta Sugerido:* ${suggested_offer_price:,.0f} (±10% banda)\n"
                                f"🎯 *Score Fase 4:* {phase4_score:.3f}\n"
                                f"🧭 *Régimen de mercado:* {market_regime.get('regime', 'sideways')}\n"
                                f"🏛️ *Señal AFP:* {afp_label} ({float(afp_info.get('pressure_score', 0.0)):+.2f})\n"
                                f"🗞️ *HE Analyzer:* {urgency_label} ({float(he_info.get('impact_score', 0.0)):+.2f})\n"
                                f"🏦 *Capital Disponible:* ${capital_disponible:,.0f} CLP\n"
-                               f"💼 *Sugerencia:* Comprar {suggested_shares} acciones por ~${suggested_size_clp:,.0f} CLP\n"
+                               f"💼 *Sugerencia:* Comprar {suggested_shares} acc @ ${suggested_offer_price:,.0f}\n"
+                               f"📊 *Comisión (0.14%):* ${commission_clp:,.0f} | Total: ${total_cost_offer:,.0f}\n"
                                f"💡 *Razón:* {analysis.reasoning}\n\n"
-                               f"👉 _Si ejecutas la compra, confirma con_ `/comprar {ticker} {suggested_shares} {price:,.0f}`\n"
-                               f"📝 _Si no ejecutas, no se registra ningún cambio._")
+                               f"👉 _Para ofertar:_ `/ofertar {ticker} BUY {int(suggested_offer_price)} {suggested_shares}`\n"
+                               f"👉 _Cuando se acepte:_ `/confirmar ID`\n"
+                               f"📝 _Si no ofertas, no se registra ningún cambio._")
 
                     self._send_automatic_telegram(msg)
                     self._last_buy_alerts[ticker] = current_time

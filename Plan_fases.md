@@ -159,6 +159,32 @@ Transformar el MVP en una plataforma de decisión de inversión más robusta, ex
 5. Fase 4 (diferenciadores Chile)
 6. Fase 6 (UX)
 7. Fase 7 (broker real)
+8. Fase 8 (order book trading)
+
+---
+
+## Fase 8 — Order Book Trading (ejecución real en bolsa)
+**Duración estimada:** 1 semana
+
+### Objetivos
+- Implementar flujo de ofertas para trading real en la Bolsa de Santiago.
+- Permitir que el bot sugiera precio y cantidad dentro de la banda ±10%.
+- Manejar la comisión de 0.14% por transacción.
+- Implementar timeout automático para ofertas sin respuesta.
+
+### Entregables
+- `order_engine.py`: motor de ofertas con validación de precio, comisión, timeout y reserva de capital.
+- Tabla `orders` en DB con estados PENDING/CONFIRMED/EXPIRED/CANCELLED.
+- Comandos Telegram: `/ofertar`, `/confirmar`, `/cancelar`, `/ofertas`.
+- Alertas de compra con precio sugerido, cantidad y comisión.
+- Sección "Ofertas" en dashboard Streamlit.
+- Tests unitarios en `tests/test_order_engine.py`.
+
+### Criterio de éxito
+- Ofertas fuera de ±10% son rechazadas automáticamente.
+- Ofertas pendientes expiran tras timeout configurable (default 10 min).
+- Capital reservado en ofertas BUY no se puede usar en otra operación.
+- Usuario confirma aceptación manualmente antes de que se registre el trade.
 
 ---
 
@@ -167,6 +193,7 @@ Transformar el MVP en una plataforma de decisión de inversión más robusta, ex
 - **Rate limits LLM:** batch, backoff y proveedor secundario.
 - **Data leakage temporal:** validación walk-forward estricta por fecha.
 - **Sobreajuste por muchas features:** regularización + selección por importancia + OOS.
+- **Ofertas estancadas:** timeout automático + re-evaluación de mercado.
 
 ---
 
@@ -176,6 +203,7 @@ Transformar el MVP en una plataforma de decisión de inversión más robusta, ex
 - Max drawdown y recuperación.
 - % de señales con explicación legible.
 - Tiempo promedio desde evento CMF/BCCh hasta alerta.
+- Tasa de aceptación de ofertas (confirmadas vs expiradas).
 
 ---
 
@@ -195,4 +223,5 @@ Transformar el MVP en una plataforma de decisión de inversión más robusta, ex
 - [x] Fase 7 implementada: `scenario_simulator.py` + abstracción `BrokerInterface` con adaptadores paper/real (manual bridge) integrada en bot.
 - [x] Reentrenamiento robusto ejecutado (modelo actualizado + `walkforward_results.csv`).
 - [x] Guardrail de probabilidad mínima ML para BUY integrado en capa de riesgo IA.
+- [x] Fase 8 implementada: `order_engine.py` con order book trading (±10% banda, 0.14% comisión, timeout automático, comandos Telegram `/ofertar`/`/confirmar`/`/cancelar`/`/ofertas`, sección "Ofertas" en dashboard).
 - [ ] Siguiente foco: hardening productivo (tests de regresión, validación histórica extendida y conexión broker real cuando se defina proveedor).

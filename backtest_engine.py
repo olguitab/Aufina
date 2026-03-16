@@ -231,14 +231,17 @@ class BacktestEngine:
                     })
 
             # Record equity
-            invested = sum(
-                pos['qty'] * float(day_data[day_data['Ticker'] == tk]['Close'].iloc[0])
-                for tk, pos in positions.items()
-                if not day_data[day_data['Ticker'] == tk].empty
-            )
+            invested = 0
+            for tk, pos in positions.items():
+                p_row = day_data[day_data['Ticker'] == tk]
+                if not p_row.empty:
+                    invested += pos['qty'] * float(p_row['Close'].iloc[0])
+                else:
+                    invested += pos['qty'] * pos['entry_price'] # fallback to entry if missing data today
+
             equity = cash + invested
 
-            ipsa_value = None
+            ipsa_value = 0.0
             if ipsa_col:
                 row0 = day_data.iloc[0]
                 val = row0.get(ipsa_col, None)
@@ -267,7 +270,14 @@ class BacktestEngine:
         tl_df = pd.DataFrame(trade_log) if trade_log else pd.DataFrame()
 
         initial = self.initial_capital
-        final = equity_curve[-1]['equity']
+        final = ec_df['equity'].iloc[-1]
+        
+        # Total profit from trades
+        if not tl_df.empty:
+            total_pnl = tl_df[tl_df['action'] == 'SELL']['pnl'].sum()
+        else:
+            total_pnl = 0
+            
         total_return = (final - initial) / initial
 
         # Trade statistics

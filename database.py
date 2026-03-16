@@ -86,7 +86,27 @@ class TradingDB:
                 raw_payload TEXT
             )
         ''')
-        
+
+        # 7. Orders (Order Book trading)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT,
+                ticker TEXT,
+                side TEXT,
+                offer_price REAL,
+                quantity REAL,
+                commission_pct REAL DEFAULT 0.0014,
+                commission_clp REAL,
+                total_cost REAL,
+                status TEXT DEFAULT 'PENDING',
+                resolved_at TEXT,
+                reasoning TEXT,
+                confidence REAL,
+                metadata TEXT
+            )
+        ''')
+
         conn.commit()
         conn.close()
 
@@ -323,4 +343,143 @@ class TradingDB:
                     "raw_payload": payload,
                 }
             )
+        return out
+
+    # ── Order Book methods ──────────────────────────────────────────────
+
+    @staticmethod
+    def create_order(order_data: Dict[str, Any]) -> int:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO orders (
+                created_at, ticker, side, offer_price, quantity,
+                commission_pct, commission_clp, total_cost,
+                status, reasoning, confidence, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+        ''', (
+            order_data.get("created_at"),
+            order_data.get("ticker"),
+            order_data.get("side"),
+            float(order_data.get("offer_price", 0)),
+            float(order_data.get("quantity", 0)),
+            float(order_data.get("commission_pct", 0.0014)),
+            float(order_data.get("commission_clp", 0)),
+            float(order_data.get("total_cost", 0)),
+            order_data.get("reasoning", ""),
+            float(order_data.get("confidence", 0)),
+            json.dumps(order_data.get("metadata", {}), ensure_ascii=False),
+        ))
+        order_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return order_id
+
+    @staticmethod
+    def load_pending_orders(ticker: str = None) -> List[Dict[str, Any]]:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        if ticker:
+            cursor.execute(
+                "SELECT id, created_at, ticker, side, offer_price, quantity, commission_pct, "
+                "commission_clp, total_cost, status, resolved_at, reasoning, confidence, metadata "
+                "FROM orders WHERE status = 'PENDING' AND ticker = ? ORDER BY id DESC",
+                (ticker,),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, created_at, ticker, side, offer_price, quantity, commission_pct, "
+                "commission_clp, total_cost, status, resolved_at, reasoning, confidence, metadata "
+                "FROM orders WHERE status = 'PENDING' ORDER BY id DESC"
+            )
+        rows = cursor.fetchall()
+        conn.close()
+        return TradingDB._rows_to_order_dicts(rows)
+
+    @staticmethod
+    def confirm_order(order_id: int):
+        from datetime import datetime, timezone
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE orders SET status = 'CONFIRMED', resolved_at = ? WHERE id = ? AND status = 'PENDING'",
+            (datetime.now(timezone.utc).isoformat(), int(order_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def cancel_order(order_id: int):
+        from datetime import datetime, timezone
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE orders SET status = 'CANCELLED', resolved_at = ? WHERE id = ? AND status = 'PENDING'",
+            (datetime.now(timezone.utc).isoformat(), int(order_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def expire_stale_orders(timeout_seconds: int = 600) -> List[Dict[str, Any]]:
+        """Marks PENDING orders older than timeout_seconds as EXPIRED. Returns the expired orders."""
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).isoformat()
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, created_at, ticker, side, offer_price, quantity, commission_pct, "
+            "commission_clp, total_cost, status, resolved_at, reasoning, confidence, metadata "
+            "FROM orders WHERE status = 'PENDING' AND created_at < ?",
+            (cutoff,),
+        )
+        stale_rows = cursor.fetchall()
+        if stale_rows:
+            stale_ids = [r[0] for r in stale_rows]
+            now_iso = datetime.now(timezone.utc).isoformat()
+            cursor.executemany(
+                "UPDATE orders SET status = 'EXPIRED', resolved_at = ? WHERE id = ?",
+                [(now_iso, oid) for oid in stale_ids],
+            )
+            conn.commit()
+        conn.close()
+        return TradingDB._rows_to_order_dicts(stale_rows)
+
+    @staticmethod
+    def load_orders(limit: int = 200, status_filter: str = None) -> List[Dict[str, Any]]:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        if status_filter:
+            cursor.execute(
+                "SELECT id, created_at, ticker, side, offer_price, quantity, commission_pct, "
+                "commission_clp, total_cost, status, resolved_at, reasoning, confidence, metadata "
+                "FROM orders WHERE status = ? ORDER BY id DESC LIMIT ?",
+                (status_filter, int(limit)),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, created_at, ticker, side, offer_price, quantity, commission_pct, "
+                "commission_clp, total_cost, status, resolved_at, reasoning, confidence, metadata "
+                "FROM orders ORDER BY id DESC LIMIT ?",
+                (int(limit),),
+            )
+        rows = cursor.fetchall()
+        conn.close()
+        return TradingDB._rows_to_order_dicts(rows)
+
+    @staticmethod
+    def _rows_to_order_dicts(rows) -> List[Dict[str, Any]]:
+        out = []
+        for r in rows:
+            try:
+                metadata = json.loads(r[13] or "{}")
+            except Exception:
+                metadata = {}
+            out.append({
+                "id": r[0], "created_at": r[1], "ticker": r[2], "side": r[3],
+                "offer_price": r[4], "quantity": r[5], "commission_pct": r[6],
+                "commission_clp": r[7], "total_cost": r[8], "status": r[9],
+                "resolved_at": r[10], "reasoning": r[11], "confidence": r[12],
+                "metadata": metadata,
+            })
         return out

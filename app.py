@@ -243,6 +243,7 @@ page = st.sidebar.radio(
     "Secciones",
     [
         "Portafolio",
+        "Ofertas",
         "Prueba Ayer",
         "Predicciones",
         "Explainability",
@@ -427,6 +428,53 @@ if page == "Portafolio":
                     st.session_state.show_reset_dialog = False
                     st.rerun()
 
+
+elif page == "Ofertas":
+    st.subheader("📋 Ofertas — Order Book Trading")
+    st.caption("Comisión: 0.14% por transacción | Precio dentro de ±10% del último precio")
+
+    # Pending orders
+    pending_orders = TradingDB.load_orders(limit=100, status_filter="PENDING")
+    if pending_orders:
+        st.markdown(f"### 🟡 Ofertas pendientes ({len(pending_orders)})")
+        reserved_buy = sum(o["total_cost"] for o in pending_orders if o["side"] == "BUY")
+        if reserved_buy > 0:
+            st.info(f"💰 Cash reservado en ofertas BUY: ${reserved_buy:,.0f} CLP")
+        pending_df = pd.DataFrame([{
+            "ID": o["id"],
+            "Ticker": o["ticker"],
+            "Lado": o["side"],
+            "Precio": f"${o['offer_price']:,.0f}",
+            "Cantidad": int(o["quantity"]),
+            "Comisión": f"${o['commission_clp']:,.0f}",
+            "Total": f"${o['total_cost']:,.0f}",
+            "Creada": o["created_at"][:19] if o["created_at"] else "",
+        } for o in pending_orders])
+        st.dataframe(pending_df, hide_index=True, use_container_width=True)
+        st.caption("Confirma con `/confirmar ID` o cancela con `/cancelar ID` via Telegram.")
+    else:
+        st.info("No hay ofertas pendientes.")
+
+    # Order history
+    st.markdown("---")
+    history_orders = TradingDB.load_orders(limit=100)
+    non_pending = [o for o in history_orders if o["status"] != "PENDING"]
+    if non_pending:
+        st.markdown(f"### 📜 Historial de ofertas ({len(non_pending)})")
+        hist_df = pd.DataFrame([{
+            "ID": o["id"],
+            "Ticker": o["ticker"],
+            "Lado": o["side"],
+            "Precio": f"${o['offer_price']:,.0f}",
+            "Cantidad": int(o["quantity"]),
+            "Total": f"${o['total_cost']:,.0f}",
+            "Estado": o["status"],
+            "Creada": o["created_at"][:19] if o["created_at"] else "",
+            "Resuelta": o["resolved_at"][:19] if o.get("resolved_at") else "",
+        } for o in non_pending])
+        st.dataframe(hist_df, hide_index=True, use_container_width=True)
+    else:
+        st.caption("Sin historial de ofertas todavía.")
 
 elif page == "Prueba Ayer":
     st.title("Simulación de Portafolio - Día de Ayer (Trading Automático)")
